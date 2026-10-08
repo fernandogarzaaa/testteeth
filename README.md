@@ -215,7 +215,6 @@ testteeth's own suite has 160 tests, including failure-path tests: red baselines
 testteeth run      # uses [tool.testteeth] in this repo's pyproject.toml
 ```
 
-SELF_SCORE_PLACEHOLDER
 
 ## Development
 
