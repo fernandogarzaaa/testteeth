@@ -1,0 +1,4 @@
+{
+  "testRunner": "vitest",
+  "vitest": { "configFile": "vitest.strong.config.ts" }
+}

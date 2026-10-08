@@ -1,4 +1,4 @@
-"""Git integration: which Python lines changed relative to a base ref."""
+"""Git integration: which lines changed relative to a base ref (any language, by pathspec)."""
 
 from __future__ import annotations
 
@@ -71,23 +71,52 @@ def parse_unified_diff(text: str) -> dict[str, set[int]]:
     return changed
 
 
-def changed_lines(root: Path, base_ref: str) -> dict[Path, frozenset[int]]:
-    """Return absolute paths of changed ``.py`` files (vs ``base_ref``) mapped to changed lines.
-
-    Compares the working tree (staged and unstaged edits) against ``base_ref`` and treats
-    untracked Python files as entirely changed.
-    """
+def verify_ref(root: Path, base_ref: str) -> Path:
+    """Return the repository top level, raising :class:`GitError` if ``base_ref`` is unknown."""
     top = repo_toplevel(root)
     try:
         _git(top, "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}")
     except GitError as exc:
         raise GitError(f"unknown base ref {base_ref!r} (is it fetched? try `git fetch origin {base_ref}`)") from exc
-    diff = _git(top, "diff", "--no-color", "--no-ext-diff", "-U0", base_ref, "--", "*.py")
+    return top
+
+
+def changed_lines(
+    root: Path, base_ref: str, patterns: tuple[str, ...] = ("*.py",)
+) -> dict[Path, frozenset[int]]:
+    """Return absolute paths of changed files (vs ``base_ref``) mapped to changed lines.
+
+    Compares the working tree (staged and unstaged edits) against ``base_ref`` and treats
+    untracked files as entirely changed. ``patterns`` are git pathspecs (default: Python files).
+    """
+    top = verify_ref(root, base_ref)
+    diff = _git(top, "diff", "--no-color", "--no-ext-diff", "-U0", base_ref, "--", *patterns)
     result: dict[Path, frozenset[int]] = {
         (top / rel).resolve(): frozenset(lines) for rel, lines in parse_unified_diff(diff).items()
     }
-    untracked = _git(top, "ls-files", "--others", "--exclude-standard", "--", "*.py")
+    untracked = _git(top, "ls-files", "--others", "--exclude-standard", "--", *patterns)
     for rel in untracked.splitlines():
         if rel.strip():
             result[(top / rel.strip()).resolve()] = ALL_LINES
     return result
+
+
+def diff_with_untracked(root: Path, base_ref: str, patterns: tuple[str, ...]) -> str:
+    """A unified diff of ``root`` vs ``base_ref`` with paths relative to ``root``, untracked files included.
+
+    Used to feed engines that read a diff file (``cargo mutants --in-diff``).
+    """
+    verify_ref(root, base_ref)
+    parts = [_git(root, "diff", "--no-color", "--no-ext-diff", "--relative", base_ref, "--", *patterns)]
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "--", *patterns)
+    for rel in untracked.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        proc = subprocess.run(
+            ["git", "diff", "--no-color", "--no-index", "--", "/dev/null", rel],
+            cwd=root, capture_output=True, text=True, timeout=60, check=False,
+        )
+        # `git diff --no-index` exits 1 when the files differ, which is the expected case here.
+        parts.append(proc.stdout.replace("+++ b//dev/null", "+++ /dev/null"))
+    return "".join(parts)

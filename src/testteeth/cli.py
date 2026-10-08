@@ -12,7 +12,8 @@ from pathlib import Path
 from . import __version__
 from .config import ConfigError, Settings, load_settings
 from .diff import GitError
-from .engine import BaselineFailed, EngineError, grade
+from .errors import BaselineFailed, EngineCrashed, EngineError
+from .languages import grade_project as grade
 from .models import GradeReport, Mutant
 from .report import render_json, render_text
 from .suggest import build_briefs, gap_brief, render_markdown
@@ -35,6 +36,13 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--operators", help="comma-separated subset of mutation operators")
     parser.add_argument("--timeout-factor", type=float, help="mutant timeout = baseline time x factor (default 3)")
     parser.add_argument("--no-coverage", action="store_true", help="do not trace the baseline run")
+    parser.add_argument(
+        "--lang", help="python | typescript (alias ts, javascript, js) | rust (alias rs); default: auto-detect"
+    )
+    parser.add_argument(
+        "--engine-args", help="extra arguments for the native engine, e.g. \"-- --test weak\" for cargo-mutants"
+    )
+    parser.add_argument("--engine-config", help="StrykerJS config file to start from (TypeScript/JavaScript)")
     parser.add_argument("-q", "--quiet", action="store_true", help="no progress output")
 
 
@@ -72,6 +80,9 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         operators=[o.strip() for o in args.operators.split(",") if o.strip()] if args.operators else None,
         timeout_factor=args.timeout_factor,
         coverage=False if args.no_coverage else None,
+        lang=None if not args.lang or args.lang == "auto" else args.lang,
+        engine_args=shlex.split(args.engine_args) if args.engine_args else None,
+        engine_config=args.engine_config,
     )
 
 
@@ -99,6 +110,10 @@ def _sources(settings: Settings, report: GradeReport) -> dict[str, str]:
     return {f: (settings.root / f).read_text(encoding="utf-8") for f in files}
 
 
+def tail_text(text: str, lines: int = 25) -> str:
+    return "\n".join(text.strip().splitlines()[-lines:])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -119,6 +134,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_ERROR
     except (EngineError, GitError) as exc:
         print(f"testteeth: {exc}", file=sys.stderr)
+        if isinstance(exc, EngineCrashed) and exc.output and str(exc).count("\n") < 3:
+            print(tail_text(exc.output), file=sys.stderr)
         return EXIT_ERROR
 
     if args.command == "run":

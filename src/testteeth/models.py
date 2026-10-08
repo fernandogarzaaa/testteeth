@@ -1,4 +1,9 @@
-"""Plain data structures shared by the engine, reporters, CLI, pytest plugin and MCP server."""
+"""The language-agnostic report model.
+
+Every language adapter (the built-in Python engine, StrykerJS for TypeScript/JavaScript, cargo-mutants for
+Rust) produces these structures; scoring, diff selection, failure-path gaps, text/JSON output and the MCP
+briefs all consume them.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ class Mutant:
     status: str = "pending"
     duration: float = 0.0
     detail: str = ""
+    engine_operator: str = ""  # the native engine's own mutator name (Stryker / cargo-mutants); "" for Python
 
     @property
     def detected(self) -> bool:
@@ -60,6 +66,7 @@ class FailurePathGap:
     kind: str  # except-branch | raise | retry | timeout | external-call
     line: int
     detail: str
+    lang: str = "python"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -115,6 +122,9 @@ class GradeReport:
     elapsed_seconds: float = 0.0
     fail_under: float | None = None
     notes: list[str] = field(default_factory=list)
+    lang: str = "python"
+    engine: str = "testteeth"  # testteeth (built-in Python engine) | stryker | cargo-mutants
+    excluded: int = 0  # mutants the engine could not evaluate (compile errors, unviable); not in the score
 
     def count(self, *statuses: str) -> int:
         return sum(1 for m in self.mutants if m.status in statuses)
@@ -149,6 +159,8 @@ class GradeReport:
         return {
             "tool": "testteeth",
             "version": __version__,
+            "lang": self.lang,
+            "engine": self.engine,
             "root": self.root,
             "base_ref": self.base_ref,
             "test_command": self.test_command,
@@ -158,6 +170,7 @@ class GradeReport:
             "timeouts": self.count(TIMEOUT),
             "survived": self.count(SURVIVED),
             "no_coverage": self.count(NO_COVERAGE),
+            "excluded": self.excluded,
             "fail_under": self.fail_under,
             "passed_gate": self.passed_gate,
             "baseline_seconds": round(self.baseline_seconds, 3),

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .config import DEFAULT_EXCLUDE, Settings
 from .diff import ALL_LINES, changed_lines
+from .errors import BaselineFailed, EngineError
 from .failure_paths import analyze_module
 from .models import KILLED, NO_COVERAGE, SURVIVED, TIMEOUT, FunctionGrade, GradeReport, Mutant
 from .operators import apply_mutant, generate_mutants, iter_functions
@@ -26,16 +27,7 @@ from .operators import apply_mutant, generate_mutants, iter_functions
 ProgressCallback = Callable[[int, int, Mutant], None]
 
 
-class EngineError(RuntimeError):
-    """Something prevented grading (bad paths, broken baseline...)."""
-
-
-class BaselineFailed(EngineError):
-    """The unmutated test suite does not pass, so mutation results would be meaningless."""
-
-    def __init__(self, message: str, output: str = "") -> None:
-        super().__init__(message)
-        self.output = output
+__all__ = ["BaselineFailed", "EngineError", "grade", "select", "discover_sources", "discover_tests"]
 
 
 # ---------------------------------------------------------------------------- selection
@@ -270,6 +262,8 @@ def grade(settings: Settings, progress: ProgressCallback | None = None) -> Grade
         test_command=settings.test_command,
         fail_under=settings.fail_under,
         notes=list(selection.notes),
+        lang="python",
+        engine="testteeth",
     )
     if not selection.sources:
         report.notes.append(

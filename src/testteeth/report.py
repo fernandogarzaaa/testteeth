@@ -18,7 +18,9 @@ def _short(text: str, width: int = 48) -> str:
 
 def render_text(report: GradeReport, max_listed: int = 8) -> str:
     scope = f"code changed vs {report.base_ref}" if report.base_ref else "all selected code"
-    out = [f"testteeth: mutation grade for {scope}", ""]
+    engine = {"stryker": "StrykerJS", "cargo-mutants": "cargo-mutants"}.get(report.engine, report.engine)
+    via = f" [{report.lang} via {engine}]" if report.lang != "python" else ""
+    out = [f"testteeth: mutation grade for {scope}{via}", ""]
     if not report.mutants and not report.gaps:
         out += [*(f"note: {n}" for n in report.notes), "Nothing to grade.", ""]
         return "\n".join(out)
@@ -45,12 +47,17 @@ def render_text(report: GradeReport, max_listed: int = 8) -> str:
         f"Mutants: {report.total}  killed: {report.killed}  survived: {report.count('survived')}  "
         f"not covered: {report.count(NO_COVERAGE)}  timeouts: {report.count('timeout')}"
     )
-    out.append(f"Failure-path gaps: {len(report.gaps)}")
+    if report.excluded:
+        out[-1] += f"  excluded: {report.excluded}"
+    out.append(f"Failure-path gaps: {len(report.gaps)}" + (" (heuristic)" if report.lang != "python" else ""))
     gate = ""
     if report.fail_under is not None:
         gate = f"  ({'PASS' if report.passed_gate else 'FAIL'}: --fail-under {report.fail_under:g})"
     out.append(f"Mutation score: {_pct(report.score).strip()}{gate}")
-    out.append(f"Time: baseline {report.baseline_seconds:.1f}s, total {report.elapsed_seconds:.1f}s")
+    if report.lang != "python" and not report.baseline_seconds:
+        out.append(f"Time: total {report.elapsed_seconds:.1f}s")
+    else:
+        out.append(f"Time: baseline {report.baseline_seconds:.1f}s, total {report.elapsed_seconds:.1f}s")
     for note in report.notes:
         out.append(f"note: {note}")
     if report.surviving():

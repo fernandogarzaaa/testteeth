@@ -1,0 +1,11 @@
+[package]
+name = "payments"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Example project for testteeth. Run from this directory:
+#   testteeth run --engine-args "-- --test weak"     # AI-style tests: low score
+#   testteeth run --engine-args "-- --test strong"   # spec-driven tests: high score
+
+[dependencies]

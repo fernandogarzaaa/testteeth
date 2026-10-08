@@ -11,3 +11,8 @@ dist/
 .coverage
 mutation.json
 selfgrade.sh
+node_modules/
+target/
+mutants.out*/
+reports/
+.stryker-tmp/

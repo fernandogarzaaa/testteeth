@@ -51,6 +51,9 @@ class Settings:
     operators: list[str] | None = None
     exclude: list[str] = field(default_factory=list)
     coverage: bool = True
+    lang: str | None = None  # None/"auto" = detect from the repo (pyproject.toml / package.json / Cargo.toml)
+    engine_args: list[str] = field(default_factory=list)  # extra args for stryker / cargo-mutants
+    engine_config: str | None = None  # a StrykerJS config file to start from (TypeScript/JavaScript)
 
     def validate(self) -> Settings:
         from .operators import ALL_OPERATORS
@@ -65,6 +68,12 @@ class Settings:
             raise ConfigError("timeouts must be positive")
         if self.max_mutants is not None and self.max_mutants < 1:
             raise ConfigError("max_mutants must be >= 1")
+        if self.lang is not None:
+            from .languages import normalize_lang
+
+            self.lang = normalize_lang(self.lang)
+        if isinstance(self.engine_args, str):
+            self.engine_args = self.engine_args.split()
         if self.operators is not None:
             unknown = sorted(set(self.operators) - set(ALL_OPERATORS))
             if unknown:
@@ -87,10 +96,22 @@ class Settings:
 
 
 def read_pyproject(root: Path) -> dict[str, Any]:
-    """Return the ``[tool.testteeth]`` table of ``root/pyproject.toml`` (empty if absent)."""
+    """Return the ``[tool.testteeth]`` table of ``root/pyproject.toml`` (empty if absent).
+
+    Projects without a ``pyproject.toml`` (TypeScript, Rust) can use a ``testteeth.toml`` with the same keys,
+    either at top level or under ``[tool.testteeth]``.
+    """
     path = root / "pyproject.toml"
     if not path.is_file():
-        return {}
+        alt = root / "testteeth.toml"
+        if not alt.is_file():
+            return {}
+        try:
+            data = tomllib.loads(alt.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{alt}: invalid TOML: {exc}") from exc
+        table = data.get("tool", {}).get("testteeth", data)
+        return {key.replace("-", "_"): value for key, value in table.items()}
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
@@ -118,4 +139,6 @@ def load_settings(root: str | os.PathLike[str] = ".", **overrides: Any) -> Setti
         values["paths"] = [values["paths"]]
     if isinstance(values.get("test_args"), str):
         values["test_args"] = values["test_args"].split()
+    if values.get("lang") in ("auto", ""):
+        values["lang"] = None
     return Settings(root=root_path, **values).validate()

@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "testteeth"
-version = "0.1.0"
-description = "Grade AI-written tests with fast, git-diff-aware mutation testing, and hand coding agents precise briefs for the tests they are missing (CLI, pytest plugin, MCP server)."
+version = "0.2.0"
+description = "Grade AI-written tests with fast, git-diff-aware mutation testing (Python, TypeScript/JavaScript via StrykerJS, Rust via cargo-mutants), and hand coding agents precise briefs for the tests they are missing (CLI, pytest plugin, MCP server)."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "Fernando Garza" }]
-keywords = ["mutation testing", "pytest", "testing", "mcp", "ai agents", "claude code", "cursor", "test quality"]
+keywords = ["mutation testing", "pytest", "testing", "mcp", "ai agents", "claude code", "cursor", "test quality", "typescript", "javascript", "rust", "stryker", "cargo-mutants"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: Pytest",
@@ -22,6 +22,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: JavaScript",
+    "Programming Language :: Rust",
     "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
@@ -49,11 +51,15 @@ testteeth = "testteeth.plugin"
 packages = ["src/testteeth"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "examples", "README.md", "LICENSE", "pyproject.toml"]
+include = ["src", "tests", "examples", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+exclude = ["**/node_modules", "**/target", "**/mutants.out*", "**/reports", "**/.stryker-tmp", "**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: end-to-end tests that spawn pytest subprocesses"]
+markers = [
+    "slow: end-to-end tests that spawn pytest subprocesses",
+    "engines: real StrykerJS / cargo-mutants runs (skipped when the engine is not installed)",
+]
 
 [tool.testteeth]
 paths = ["src/testteeth"]

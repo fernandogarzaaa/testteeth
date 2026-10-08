@@ -1,8 +1,8 @@
-"""testteeth: grade AI-written tests with mutation testing and close the gaps."""
+"""testteeth: grade AI-written tests with mutation testing (Python, TypeScript/JavaScript, Rust) and close the gaps."""
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__", "grade", "load_settings"]
 

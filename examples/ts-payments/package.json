@@ -1,0 +1,15 @@
+{
+  "name": "ts-payments",
+  "private": true,
+  "type": "module",
+  "description": "Example project for testteeth (mirrors examples/payments in Python).",
+  "scripts": {
+    "test:weak": "vitest run --config vitest.weak.config.ts",
+    "test:strong": "vitest run --config vitest.strong.config.ts"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "^9.0.0",
+    "@stryker-mutator/vitest-runner": "^9.0.0",
+    "vitest": "^3.2.0"
+  }
+}
