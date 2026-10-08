@@ -1,0 +1,8 @@
+# Example project for testteeth. Run from this directory:
+#   testteeth run --pytest-args tests_weak     # AI-style tests: low score
+#   testteeth run --pytest-args tests_strong   # spec-driven tests: high score
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.testteeth]
+paths = ["payments"]
