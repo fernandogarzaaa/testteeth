@@ -11,8 +11,6 @@ from testteeth.engine import BaselineFailed, EngineError
 from testteeth.models import GradeReport
 
 
-
-
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     write(tmp_path, "pkg/mod.py", SAMPLE_SRC)

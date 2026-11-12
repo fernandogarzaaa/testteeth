@@ -16,7 +16,7 @@ from .errors import BaselineFailed, EngineCrashed, EngineError
 from .languages import grade_project as grade
 from .models import GradeReport, Mutant
 from .report import render_json, render_text
-from .suggest import build_briefs, gap_brief, render_markdown
+from .suggest import build_briefs, gap_brief, read_sources, render_markdown
 
 EXIT_OK = 0
 EXIT_GATE = 1
@@ -106,8 +106,7 @@ def _grade(args: argparse.Namespace) -> tuple[Settings, GradeReport]:
 
 
 def _sources(settings: Settings, report: GradeReport) -> dict[str, str]:
-    files = {m.file for m in report.mutants}
-    return {f: (settings.root / f).read_text(encoding="utf-8") for f in files}
+    return read_sources(settings.root, report)
 
 
 def tail_text(text: str, lines: int = 25) -> str:

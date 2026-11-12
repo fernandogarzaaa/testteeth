@@ -27,7 +27,7 @@ from .operators import apply_mutant, generate_mutants, iter_functions
 ProgressCallback = Callable[[int, int, Mutant], None]
 
 
-__all__ = ["BaselineFailed", "EngineError", "grade", "select", "discover_sources", "discover_tests"]
+__all__ = ["BaselineFailed", "EngineError", "discover_sources", "discover_tests", "grade", "select"]
 
 
 # ---------------------------------------------------------------------------- selection
@@ -200,7 +200,7 @@ def run_tests(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float | N
     kwargs: dict[str, object] = {}
     if os.name == "posix":
         kwargs["start_new_session"] = True
-    proc = subprocess.Popen(  # noqa: S603 - command is built from sys.executable + user test args
+    proc = subprocess.Popen(
         cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kwargs  # type: ignore[call-overload]
     )
     try:
@@ -222,8 +222,11 @@ def _tail(text: str, lines: int = 25) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
-def baseline(settings: Settings, workspace: Path, sources: list[str]) -> tuple[SuiteRun, dict[str, set[int]] | None]:
+def baseline(
+    settings: Settings, workspace: Path, sources: list[str], notes: list[str] | None = None
+) -> tuple[SuiteRun, dict[str, set[int]] | None]:
     """Run the untouched suite once (with the line tracer) and return its run and coverage."""
+    notes = notes if notes is not None else []
     cmd = settings.test_command
     extra: dict[str, str] = {}
     trace_out = workspace.parent / "trace.json"
@@ -241,14 +244,27 @@ def baseline(settings: Settings, workspace: Path, sources: list[str]) -> tuple[S
             f"the test suite fails before any mutation (exit code {run.returncode}); fix it first", run.output
         )
     coverage: dict[str, set[int]] | None = None
-    if settings.coverage and trace_out.is_file():
-        raw = json.loads(trace_out.read_text(encoding="utf-8"))
+    # pytest-xdist workers each write their own ``trace.json.<worker>`` fragment next to the main file.
+    fragments = sorted(trace_out.parent.glob(trace_out.name + "*")) if settings.coverage else []
+    if fragments:
         coverage = {rel: set() for rel in sources}
         real = {os.path.realpath(workspace / rel): rel for rel in sources}
-        for filename, lines in raw.items():
-            rel = real.get(os.path.realpath(filename))
-            if rel is not None:
-                coverage[rel].update(lines)
+        for fragment in fragments:
+            try:
+                raw = json.loads(fragment.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for filename, lines in raw.items():
+                rel = real.get(os.path.realpath(filename))
+                if rel is not None:
+                    coverage[rel].update(lines)
+        if not any(coverage.values()):
+            # A green suite that executes nothing of the selected code is far less likely than a tracer that
+            # was displaced (another sys.settrace user, an unusual runner). Do not report 0% on a guess.
+            coverage = None
+            notes.append(
+                "line coverage recorded nothing (is another tracer active?); every mutant was run instead"
+            )
     return run, coverage
 
 
@@ -275,7 +291,7 @@ def grade(settings: Settings, progress: ProgressCallback | None = None) -> Grade
     with tempfile.TemporaryDirectory(prefix="testteeth-") as tmp:
         parent = Path(tmp)
         workspaces = [_make_workspace(settings.root, parent, 0)]
-        base_run, coverage = baseline(settings, workspaces[0], list(selection.sources))
+        base_run, coverage = baseline(settings, workspaces[0], list(selection.sources), report.notes)
         report.baseline_seconds = base_run.seconds
         timeout = max(settings.min_timeout, base_run.seconds * settings.timeout_factor + 2.0)
 

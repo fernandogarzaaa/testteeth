@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from dataclasses import dataclass, field, fields
@@ -91,35 +92,93 @@ class Settings:
             "--no-header",
             "-p",
             "no:cacheprovider",
+            *_no_cov_args(self.test_args),
             *self.test_args,
         ]
+
+
+def _no_cov_args(test_args: list[str]) -> list[str]:
+    """``["--no-cov"]`` when pytest-cov would otherwise measure coverage during testteeth's runs.
+
+    Coverage of mutated code is meaningless, slows every mutant down, lets ``--cov-fail-under`` fail the
+    baseline, and (before Python 3.12) replaces the line tracer testteeth relies on.
+    """
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") or "--no-cov" in test_args:
+        return []
+    if any(arg in ("no:cov", "no:pytest_cov") or arg in ("-pno:cov", "-pno:pytest_cov") for arg in test_args):
+        return []
+    try:
+        installed = importlib.util.find_spec("pytest_cov") is not None
+    except (ImportError, ValueError):  # pragma: no cover - a broken installation
+        installed = False
+    return ["--no-cov"] if installed else []
 
 
 def read_pyproject(root: Path) -> dict[str, Any]:
     """Return the ``[tool.testteeth]`` table of ``root/pyproject.toml`` (empty if absent).
 
-    Projects without a ``pyproject.toml`` (TypeScript, Rust) can use a ``testteeth.toml`` with the same keys,
+    Projects without a ``pyproject.toml`` or without that table (TypeScript, Rust) can use a ``testteeth.toml`` with the same keys,
     either at top level or under ``[tool.testteeth]``.
     """
+    table: Any = None
     path = root / "pyproject.toml"
-    if not path.is_file():
-        alt = root / "testteeth.toml"
-        if not alt.is_file():
+    if path.is_file():
+        table = _load_toml(path).get("tool", {}).get("testteeth")
+    if table is None:
+        # No pyproject.toml, or one without [tool.testteeth] (e.g. a TypeScript repo with Python tooling).
+        path = root / "testteeth.toml"
+        if not path.is_file():
             return {}
-        try:
-            data = tomllib.loads(alt.read_text(encoding="utf-8"))
-        except tomllib.TOMLDecodeError as exc:
-            raise ConfigError(f"{alt}: invalid TOML: {exc}") from exc
-        table = data.get("tool", {}).get("testteeth", data)
-        return {key.replace("-", "_"): value for key, value in table.items()}
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{path}: invalid TOML: {exc}") from exc
-    table = data.get("tool", {}).get("testteeth", {})
+        data = _load_toml(path)
+        tool = data.get("tool")
+        table = tool["testteeth"] if isinstance(tool, dict) and "testteeth" in tool else data
     if not isinstance(table, dict):
         raise ConfigError(f"{path}: [tool.testteeth] must be a table")
     return {key.replace("-", "_"): value for key, value in table.items()}
+
+
+def _load_toml(path: Path) -> dict[str, Any]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: invalid TOML: {exc}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"{path}: cannot be read: {exc}") from exc
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_strings(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value)
+
+
+#: setting -> (predicate, what a valid value looks like)
+_TYPES: dict[str, tuple[Any, str]] = {
+    "paths": (lambda v: isinstance(v, str) or _is_strings(v), "a string or a list of strings"),
+    "base_ref": (lambda v: isinstance(v, str), "a string"),
+    "test_args": (lambda v: isinstance(v, str) or _is_strings(v), "a string or a list of strings"),
+    "fail_under": (_is_number, "a number"),
+    "workers": (lambda v: isinstance(v, int) and not isinstance(v, bool), "an integer"),
+    "timeout_factor": (_is_number, "a number"),
+    "min_timeout": (_is_number, "a number"),
+    "max_mutants": (lambda v: isinstance(v, int) and not isinstance(v, bool), "an integer"),
+    "operators": (_is_strings, "a list of strings"),
+    "exclude": (_is_strings, "a list of strings"),
+    "coverage": (lambda v: isinstance(v, bool), "true or false"),
+    "lang": (lambda v: isinstance(v, str), "a string"),
+    "engine_args": (lambda v: isinstance(v, str) or _is_strings(v), "a string or a list of strings"),
+    "engine_config": (lambda v: isinstance(v, str), "a string"),
+}
+
+
+def _check_types(values: dict[str, Any]) -> None:
+    """Reject wrongly typed settings with a clear message instead of a TypeError deep in the engine."""
+    for key, value in values.items():
+        check, expected = _TYPES[key]
+        if not check(value):
+            raise ConfigError(f"{key} must be {expected}, got {value!r}")
 
 
 def load_settings(root: str | os.PathLike[str] = ".", **overrides: Any) -> Settings:
@@ -135,6 +194,7 @@ def load_settings(root: str | os.PathLike[str] = ".", **overrides: Any) -> Setti
             raise ConfigError(f"unknown setting {key!r}")
         if value is not None:
             values[key] = value
+    _check_types(values)
     if isinstance(values.get("paths"), str):
         values["paths"] = [values["paths"]]
     if isinstance(values.get("test_args"), str):

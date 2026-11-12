@@ -1,0 +1,289 @@
+"""Regression tests for bugs found while auditing 0.2.0."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from conftest import git, write
+from testteeth import config as config_mod
+from testteeth.config import ConfigError, load_settings
+from testteeth.diff import changed_lines, diff_with_untracked
+from testteeth.engine import grade
+from testteeth.models import GradeReport
+from testteeth.operators import generate_mutants
+from testteeth.suggest import read_sources
+
+PROJECT = {
+    "calc.py": """
+        def clamp(x, low, high):
+            if x < low:
+                return low
+            if x > high:
+                return high
+            return x
+        """,
+    "test_calc.py": """
+        from calc import clamp
+
+        def test_clamp():
+            assert clamp(5, 0, 10) == 5
+            assert clamp(-1, 0, 10) == 0
+            assert clamp(11, 0, 10) == 10
+            assert clamp(0, 0, 10) == 0
+            assert clamp(10, 0, 10) == 10
+        """,
+}
+
+
+def make_project(root: Path, files: dict[str, str] = PROJECT) -> Path:
+    for rel, text in files.items():
+        write(root, rel, text)
+    return root
+
+
+# ---------------------------------------------------------------- coverage next to other pytest plugins
+def _has(module: str) -> bool:
+    return importlib.util.find_spec(module) is not None
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("plugin", "args"),
+    [("pytest_cov", ["--cov=calc"]), ("xdist", ["-n", "2"])],
+    ids=["pytest-cov", "pytest-xdist"],
+)
+def test_coverage_survives_other_plugins(tmp_path, plugin, args):
+    """pytest-cov used to replace the tracer and xdist workers were never traced: every mutant was reported
+    `not covered` and a strong suite scored 0%."""
+    if not _has(plugin):
+        pytest.skip(f"{plugin} is not installed")
+    report = grade(load_settings(make_project(tmp_path), paths=["calc.py"], test_args=args))
+    assert report.total > 0
+    assert report.count("no_coverage") == 0
+    assert report.killed >= 3  # only the two equivalent boundary mutants of `clamp` survive
+
+
+def test_no_cov_is_passed_only_when_pytest_cov_would_run(monkeypatch):
+    monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+    monkeypatch.setattr(config_mod.importlib.util, "find_spec", lambda name: object())
+    assert config_mod._no_cov_args(["tests"]) == ["--no-cov"]
+    assert config_mod._no_cov_args(["tests", "--no-cov"]) == []
+    assert config_mod._no_cov_args(["-p", "no:cov"]) == []
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    assert config_mod._no_cov_args(["tests"]) == []
+    monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD")
+    monkeypatch.setattr(config_mod.importlib.util, "find_spec", lambda name: None)
+    assert config_mod._no_cov_args(["tests"]) == []
+
+
+@pytest.mark.slow
+def test_empty_trace_is_not_reported_as_zero_coverage(tmp_path, monkeypatch):
+    """If the tracer records nothing at all, every mutant is run instead of being called `not covered`."""
+    make_project(tmp_path)
+    # A sitecustomize-style saboteur: the tracer module is replaced by one that records nothing.
+    fake = write(tmp_path / "fake", "testteeth_blank_tracer.py", """
+        import json, os
+        def pytest_unconfigure(config):
+            with open(os.environ["TESTTEETH_TRACE_OUT"], "w") as handle:
+                json.dump({}, handle)
+        """)
+    settings = load_settings(tmp_path, paths=["calc.py"])
+    monkeypatch.setenv("PYTHONPATH", str(fake.parent))
+    import testteeth.engine as engine
+
+    real_run = engine.run_tests
+    monkeypatch.setattr(
+        engine, "run_tests",
+        lambda cmd, *a, **k: real_run([c if c != "testteeth._tracer" else "testteeth_blank_tracer" for c in cmd], *a, **k),
+    )
+    report = grade(settings)
+    assert report.count("no_coverage") == 0 and report.killed >= 3
+    assert any("line coverage recorded nothing" in note for note in report.notes)
+
+
+TRACER_SCRIPT = """
+import sys, threading
+import testteeth._tracer as tracer
+import target_mod
+target_mod.f(True)
+worker = threading.Thread(target=target_mod.g)
+worker.start(); worker.join()
+tracer.pytest_unconfigure(None)
+"""
+
+
+def test_tracer_follows_threads_and_writes_xdist_fragments(tmp_path):
+    target = write(tmp_path, "target_mod.py", """
+        def f(x):
+            if x:
+                return 1
+            return 2
+
+        def g():
+            return 3
+        """)
+    out = tmp_path / "trace.json"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TESTTEETH_")}
+    env.update(
+        TESTTEETH_TRACE_FILES=str(target), TESTTEETH_TRACE_OUT=str(out), PYTEST_XDIST_WORKER="gw3",
+        PYTHONPATH=os.pathsep.join([str(tmp_path), *sys.path]),
+    )
+    subprocess.run([sys.executable, "-c", TRACER_SCRIPT], env=env, check=True, timeout=60)
+    assert not out.exists()  # a worker never writes the controller's file
+    lines = set(json.loads((tmp_path / "trace.json.gw3").read_text())[str(target)])
+    assert {1, 2, 3, 6, 7} <= lines and 4 not in lines
+
+
+# ---------------------------------------------------------------- git diff
+def _repo(root: Path) -> Path:
+    git(root, "init", "-q", "-b", "main")
+    write(root, "mod.py", "def a():\n    return 1\n\n\ndef b():\n    return 2\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    return root
+
+
+def test_diff_is_taken_from_the_merge_base(tmp_path):
+    """Commits that landed on the base branch after the fork are not this branch's changes."""
+    root = _repo(tmp_path)
+    git(root, "checkout", "-qb", "feature")
+    write(root, "mod.py", "def a():\n    return 10\n\n\ndef b():\n    return 2\n")
+    git(root, "commit", "-qam", "feature edits a")
+    git(root, "checkout", "-q", "main")
+    write(root, "mod.py", "def a():\n    return 1\n\n\ndef b():\n    return 20\n")
+    write(root, "other.py", "def c():\n    return 3\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "main moves on")
+    git(root, "checkout", "-q", "feature")
+
+    changed = changed_lines(root, "main")
+    assert changed == {(root / "mod.py").resolve(): frozenset({2})}
+    diff = diff_with_untracked(root, "main", ("*.py",))
+    assert "return 10" in diff and "return 20" not in diff and "other.py" not in diff
+
+
+def test_diff_handles_non_ascii_file_names(tmp_path):
+    root = _repo(tmp_path)
+    write(root, "café.py", "def d():\n    return 4\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "add")
+    write(root, "café.py", "def d():\n    return 5\n")
+    assert changed_lines(root, "HEAD") == {(root / "café.py").resolve(): frozenset({2})}
+
+
+# ---------------------------------------------------------------- settings
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ('workers = "4"', "workers must be an integer"),
+        ("fail_under = true", "fail_under must be a number"),
+        ("paths = 3", "paths must be a string or a list of strings"),
+        ('exclude = "tests"', "exclude must be a list of strings"),
+        ('coverage = "no"', "coverage must be true or false"),
+        ("operators = [1]", "operators must be a list of strings"),
+    ],
+)
+def test_wrongly_typed_settings_are_config_errors(tmp_path, line, message):
+    write(tmp_path, "pyproject.toml", f"[tool.testteeth]\n{line}\n")
+    with pytest.raises(ConfigError, match=message):
+        load_settings(tmp_path)
+
+
+def test_testteeth_toml_is_used_when_pyproject_has_no_table(tmp_path):
+    write(tmp_path, "pyproject.toml", "[tool.black]\nline-length = 100\n")
+    write(tmp_path, "testteeth.toml", 'lang = "rust"\nfail_under = 80\n')
+    settings = load_settings(tmp_path)
+    assert settings.lang == "rust" and settings.fail_under == 80
+
+
+def test_pyproject_table_wins_over_testteeth_toml(tmp_path):
+    write(tmp_path, "pyproject.toml", "[tool.testteeth]\nfail_under = 50\n")
+    write(tmp_path, "testteeth.toml", "fail_under = 80\n")
+    assert load_settings(tmp_path).fail_under == 50
+
+
+def test_testteeth_toml_table_must_be_a_table(tmp_path):
+    write(tmp_path, "testteeth.toml", '[tool]\ntestteeth = "nope"\n')
+    with pytest.raises(ConfigError, match="must be a table"):
+        load_settings(tmp_path)
+
+
+# ---------------------------------------------------------------- pragma: no mutate
+def test_pragma_no_mutate_skips_the_line():
+    source = "def f(x):\n    if x > 1:  # pragma: no mutate\n        return x + 1\n    return round(x, 2)  # pragma: no-mutate\n"
+    lines = {m.line for m in generate_mutants(source, "m.py")}
+    assert lines == {3}
+    assert {m.line for m in generate_mutants(source.replace("# pragma: no mutate", ""), "m.py")} == {2, 3}
+
+
+# ---------------------------------------------------------------- briefs for files that vanished
+def test_read_sources_skips_unreadable_files(tmp_path, make_mutant):
+    write(tmp_path, "ok.py", "x = 1\n")
+    (tmp_path / "bad.py").write_bytes(b"\xff\xfe\x00")
+    mutants = [make_mutant(file="ok.py"), make_mutant(file="bad.py"), make_mutant(file="gone.py")]
+    report = GradeReport(root=str(tmp_path), base_ref=None, test_command=[], mutants=mutants)
+    assert read_sources(tmp_path, report) == {"ok.py": "x = 1\n"}
+
+
+# ---------------------------------------------------------------- plugin under pytest-xdist
+@pytest.mark.slow
+def test_plugin_grades_once_under_xdist(pytester):
+    if not _has("xdist"):
+        pytest.skip("pytest-xdist is not installed")
+    pytester.makepyfile(calc=PROJECT["calc.py"], test_calc=PROJECT["test_calc.py"])
+    result = pytester.runpytest_subprocess("--testteeth", "--testteeth-paths=calc.py", "-n", "2")
+    result.assert_outcomes(passed=1)
+    out = result.stdout.str()
+    assert out.count("Mutation score:") == 1
+
+
+# ---------------------------------------------------------------- failure injected by a decorator
+def test_failure_set_up_in_a_test_decorator_counts():
+    from testteeth.failure_paths import analyze_module
+
+    source = "import requests\n\n\ndef fetch(url):\n    return requests.get(url).json()\n"
+    test = (
+        "from unittest.mock import patch\n\n\n"
+        "@patch('m.requests.get', side_effect=ConnectionError('down'))\n"
+        "def test_fetch_down(get):\n    assert fetch('u') is None\n"
+    )
+    assert analyze_module(source, "m.py", None, [test], {"fetch"}) == []
+    plain = "def test_fetch():\n    assert fetch('u')\n"
+    assert [g.kind for g in analyze_module(source, "m.py", None, [plain], {"fetch"})] == ["external-call"]
+
+
+# ---------------------------------------------------------------- Rust --base selection
+def test_rust_base_ref_selects_only_the_changed_function(tmp_path, monkeypatch):
+    """Context lines of the diff given to cargo-mutants used to count as changed: neighbours got gaps."""
+    from testteeth.languages import rust as rs
+
+    root = tmp_path
+    git(root, "init", "-q", "-b", "main")
+    write(root, "Cargo.toml", '[package]\nname = "demo"\nversion = "0.1.0"\n')
+    body = "pub fn {n}(p: &str) -> std::io::Result<String> {{\n    std::fs::read_to_string(p){tail}\n}}\n"
+    write(root, "src/lib.rs", "".join(body.format(n=n, tail="") for n in "abc"))
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    text = (root / "src/lib.rs").read_text().splitlines(keepends=True)
+    text[4] = "    std::fs::read_to_string(p).map(|s| s.trim().to_string())\n"
+    (root / "src/lib.rs").write_text("".join(text))
+
+    def fake_engine(cmd, cwd, env_extra=None):
+        out = Path(cmd[cmd.index("--output") + 1]) / "mutants.out"
+        out.mkdir(parents=True)
+        (out / "outcomes.json").write_text(json.dumps({"outcomes": []}))
+        from testteeth.engine import SuiteRun
+
+        return SuiteRun(0, 0.1, "")
+
+    monkeypatch.setattr(rs, "run_engine", fake_engine)
+    monkeypatch.setattr(rs, "check_installed", lambda: "cargo")
+    report = rs.CargoMutantsAdapter().grade(load_settings(root, lang="rust", base_ref="HEAD"))
+    assert {gap.function for gap in report.gaps} == {"b"}

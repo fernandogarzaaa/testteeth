@@ -22,6 +22,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: JavaScript",
     "Programming Language :: Rust",
     "Topic :: Software Development :: Testing",
@@ -34,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
-dev = ["mcp>=1.2", "build", "twine"]
+dev = ["mcp>=1.2", "build", "twine", "ruff", "mypy", "pytest-cov", "pytest-xdist"]
 
 [project.urls]
 Homepage = "https://github.com/fernandogarzaaa/testteeth"
@@ -66,3 +68,29 @@ paths = ["src/testteeth"]
 test_args = ["tests", "-m", "not slow"]
 # The tracer is tested in a subprocess (it cannot trace itself) and __main__ is a 1-line shim.
 exclude = ["_tracer.py", "__main__.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
+extend-exclude = ["examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF", "C4", "PIE"]
+ignore = [
+    "E501",    # long lines are allowed where they read better (regex tables, briefs)
+    "RUF001", "RUF002", "RUF003",  # ambiguous unicode in test fixtures is deliberate
+    "B007", "C408", "RUF015", "RUF043",  # stylistic; not worth the churn
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["testteeth", "conftest"]
+
+[tool.mypy]
+files = ["src"]
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["mcp.*"]
+ignore_missing_imports = true

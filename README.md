@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/fernandogarzaaa/testteeth/actions/workflows/ci.yml/badge.svg)](https://github.com/fernandogarzaaa/testteeth/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/testteeth)](https://pypi.org/project/testteeth/)
-![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
+![Python](https://img.shields.io/badge/python-3.10%20--%203.14-blue)
 ![Languages](https://img.shields.io/badge/grades-Python%20%7C%20TypeScript%2FJS%20%7C%20Rust-informational)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -202,6 +202,12 @@ fail_under = 80
 exclude = ["*_pb2.py"]
 ```
 
+Projects without a `[tool.testteeth]` table can put the same keys in a `testteeth.toml` next to it. Wrongly typed values (`workers = "4"`) are reported as configuration errors.
+
+**`--base` compares against the merge base.** `--base origin/main` grades what your branch changed since it forked from `origin/main` (what a pull request shows), not everything that differs from the tip of `main`. In CI, fetch enough history for the merge base to exist (`fetch-depth: 0` with `actions/checkout`); without one, testteeth falls back to a plain diff against the ref.
+
+**Silencing a mutant.** A Python line ending in `# pragma: no mutate` is never mutated. Use it for equivalent mutants (changes that cannot alter behaviour) once you have looked at them, not to raise the score. For the other languages use the engines' own markers (`// Stryker disable next-line all`, `#[mutants::skip]`).
+
 ## pytest plugin
 
 Installed automatically with the package:
@@ -212,7 +218,7 @@ pytest --testteeth --testteeth-base=main --testteeth-fail-under=80
 pytest tests/unit --testteeth --testteeth-paths=src/mypkg --testteeth-json=mutation.json
 ```
 
-The mutant runs reuse your pytest arguments (minus the `--testteeth*` ones). If the normal session fails, grading is skipped. If the score is under the gate, the session exits non-zero and the report is printed in a `testteeth` section of the terminal summary.
+The mutant runs reuse your pytest arguments (minus the `--testteeth*` ones). If the normal session fails, grading is skipped. If the score is under the gate, the session exits non-zero and the report is printed in a `testteeth` section of the terminal summary. Under pytest-xdist the controller grades once, after the workers finish.
 
 ## MCP server (Claude Code, Cursor)
 
@@ -260,9 +266,9 @@ A good agent prompt: *"After changing code, call `grade_tests` with `base_ref: "
 
 For Python:
 
-1. **Select**: find `.py` files under the configured paths (skipping tests, venvs, build dirs). With `--base`, `git diff -U0 <ref>` plus untracked files decide which functions changed. Only those are mutated.
+1. **Select**: find `.py` files under the configured paths (skipping tests, venvs, build dirs). With `--base`, `git diff -U0` against the merge base of `<ref>` and `HEAD`, plus untracked files, decide which functions changed. Only those are mutated.
 2. **Mutate**: walk the AST and record each mutant as an exact replacement of one source span. Formatting and comments elsewhere are untouched, and every mutant is compiled before use. Docstrings, annotations, f-strings, logging/print calls and `if __name__ == "__main__"` are skipped to cut noise.
-3. **Baseline**: copy the project to a temp dir and run the suite once with a tiny line tracer. A red suite aborts with its output, since mutation results would be meaningless.
+3. **Baseline**: copy the project to a temp dir and run the suite once with a tiny line tracer (`sys.monitoring` on Python 3.12+, so it coexists with coverage tools and debuggers; pytest-xdist workers are traced too, and `--no-cov` is passed when pytest-cov is installed because coverage of mutated code is meaningless). A red suite aborts with its output, since mutation results would be meaningless.
 4. **Run**: each covered mutant is written into a worker's copy (with `PYTHONDONTWRITEBYTECODE=1`, so stale bytecode can never mask a mutant). The copy's `src/` and root go first on `PYTHONPATH`, so editable installs of the project don't leak in. Failing tests mean **killed**, green means **survived**, and a hang beyond the timeout counts as **killed (timeout)**.
 5. **Analyse**: score per function, failure-path heuristics, and briefs.
 
@@ -272,7 +278,7 @@ Limits worth knowing: it's a heuristic grader, not a proof. Equivalent mutants (
 
 ## Dogfooding: testteeth grades itself
 
-testteeth's own suite has 298 tests, including failure-path tests: red baselines, git errors, unknown refs, hanging mutants, timeouts, stale briefs, invalid config, MCP errors returned as data, and for the TypeScript and Rust adapters a missing engine, an engine crash, a malformed report and an unknown `--lang` (driven by recorded StrykerJS and cargo-mutants reports). CI runs it on Python 3.10–3.12, and a separate job installs StrykerJS and cargo-mutants and grades both examples for real. Running testteeth on its own source with its fast unit tests:
+testteeth's own suite has over 300 tests, including failure-path tests: red baselines, git errors, unknown refs, hanging mutants, timeouts, stale briefs, invalid config, MCP errors returned as data, and for the TypeScript and Rust adapters a missing engine, an engine crash, a malformed report and an unknown `--lang` (driven by recorded StrykerJS and cargo-mutants reports). CI runs it on Python 3.10–3.14 with ruff and mypy, and a separate job installs StrykerJS and cargo-mutants and grades both examples for real. Running testteeth on its own source with its fast unit tests:
 
 ```bash
 testteeth run      # uses [tool.testteeth] in this repo's pyproject.toml
@@ -286,6 +292,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest                 # everything (slow end-to-end tests included)
 pytest -m "not slow"   # unit tests only
+ruff check && mypy     # lint and types (both enforced in CI)
 pytest -m engines      # real StrykerJS / cargo-mutants runs (needs `npm ci` in examples/ts-payments
                        # and `cargo install cargo-mutants`; skipped otherwise)
 python -m build && twine check dist/*

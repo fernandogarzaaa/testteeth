@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import textwrap
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from . import idioms
@@ -297,6 +298,17 @@ def gap_brief(gap: FailurePathGap) -> dict[str, Any]:
     data["must_assert"] = idioms.gap_guidance(gap.lang, gap.kind)
     data["heuristic"] = True
     return data
+
+
+def read_sources(root: Path, report: GradeReport) -> dict[str, str]:
+    """Current source of every mutated file; files that vanished or are not UTF-8 are left out."""
+    sources: dict[str, str] = {}
+    for rel in sorted({m.file for m in report.mutants}):
+        try:
+            sources[rel] = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return sources
 
 
 def build_briefs(report: GradeReport, sources: dict[str, str]) -> list[TestBrief]:

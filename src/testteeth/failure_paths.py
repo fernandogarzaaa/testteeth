@@ -111,7 +111,9 @@ def _test_functions(test_sources: Iterable[str]) -> list[str]:
         lines = source.splitlines()
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
-                bodies.append("\n".join(lines[node.lineno - 1 : node.end_lineno]))
+                # Decorators count: `@patch(..., side_effect=TimeoutError)` is where many tests inject the failure.
+                start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+                bodies.append("\n".join(lines[start - 1 : node.end_lineno]))
     return bodies
 
 

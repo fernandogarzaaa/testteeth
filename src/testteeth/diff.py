@@ -19,7 +19,7 @@ class GitError(RuntimeError):
 def _git(root: Path, *args: str) -> str:
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, timeout=60, check=False
+            ["git", "-c", "core.quotepath=off", *args], cwd=root, capture_output=True, text=True, timeout=60, check=False
         )
     except FileNotFoundError as exc:
         raise GitError("git executable not found on PATH") from exc
@@ -81,16 +81,30 @@ def verify_ref(root: Path, base_ref: str) -> Path:
     return top
 
 
+def comparison_ref(top: Path, base_ref: str) -> str:
+    """The commit to diff the working tree against: the merge base of ``base_ref`` and ``HEAD``.
+
+    Diffing against the tip of ``base_ref`` would also report everything that landed on the base branch
+    after this branch forked (as if this branch had reverted it). Falls back to ``base_ref`` itself when
+    there is no merge base (unrelated histories, shallow clone) or no ``HEAD`` yet.
+    """
+    try:
+        return _git(top, "merge-base", base_ref, "HEAD").strip() or base_ref
+    except GitError:
+        return base_ref
+
+
 def changed_lines(
     root: Path, base_ref: str, patterns: tuple[str, ...] = ("*.py",)
 ) -> dict[Path, frozenset[int]]:
     """Return absolute paths of changed files (vs ``base_ref``) mapped to changed lines.
 
-    Compares the working tree (staged and unstaged edits) against ``base_ref`` and treats
+    Compares the working tree (staged and unstaged edits) against the merge base of ``base_ref`` and
+    ``HEAD`` (what a pull request shows) and treats
     untracked files as entirely changed. ``patterns`` are git pathspecs (default: Python files).
     """
     top = verify_ref(root, base_ref)
-    diff = _git(top, "diff", "--no-color", "--no-ext-diff", "-U0", base_ref, "--", *patterns)
+    diff = _git(top, "diff", "--no-color", "--no-ext-diff", "-U0", comparison_ref(top, base_ref), "--", *patterns)
     result: dict[Path, frozenset[int]] = {
         (top / rel).resolve(): frozenset(lines) for rel, lines in parse_unified_diff(diff).items()
     }
@@ -106,15 +120,16 @@ def diff_with_untracked(root: Path, base_ref: str, patterns: tuple[str, ...]) ->
 
     Used to feed engines that read a diff file (``cargo mutants --in-diff``).
     """
-    verify_ref(root, base_ref)
-    parts = [_git(root, "diff", "--no-color", "--no-ext-diff", "--relative", base_ref, "--", *patterns)]
+    top = verify_ref(root, base_ref)
+    against = comparison_ref(top, base_ref)
+    parts = [_git(root, "diff", "--no-color", "--no-ext-diff", "--relative", against, "--", *patterns)]
     untracked = _git(root, "ls-files", "--others", "--exclude-standard", "--", *patterns)
     for rel in untracked.splitlines():
         rel = rel.strip()
         if not rel:
             continue
         proc = subprocess.run(
-            ["git", "diff", "--no-color", "--no-index", "--", "/dev/null", rel],
+            ["git", "-c", "core.quotepath=off", "diff", "--no-color", "--no-index", "--", "/dev/null", rel],
             cwd=root, capture_output=True, text=True, timeout=60, check=False,
         )
         # `git diff --no-index` exits 1 when the files differ, which is the expected case here.

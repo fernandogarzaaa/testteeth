@@ -22,7 +22,16 @@ from ..errors import BaselineFailed, EngineCrashed, EngineError, EngineNotInstal
 from ..models import KILLED, NO_COVERAGE, SURVIVED, TIMEOUT, GradeReport, Mutant
 from ..rules import analyze, test_bodies
 from . import EXTENSIONS
-from .native import SourceCache, finish, make_mutant, new_report, python_only_notes, run_engine, selected_functions, tail
+from .native import (
+    SourceCache,
+    finish,
+    make_mutant,
+    new_report,
+    python_only_notes,
+    run_engine,
+    selected_functions,
+    tail,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Settings
@@ -392,4 +401,4 @@ class StrykerAdapter:
             raise ReportError(f"{ENGINE_NAME} wrote an invalid JSON report: {exc}") from exc
 
 
-__all__ = ["StrykerAdapter", "parse_report", "normalize_operator", "EngineError"]
+__all__ = ["EngineError", "StrykerAdapter", "normalize_operator", "parse_report"]
