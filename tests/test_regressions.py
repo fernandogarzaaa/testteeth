@@ -76,8 +76,11 @@ def test_no_cov_is_passed_only_when_pytest_cov_would_run(monkeypatch):
     assert config_mod._no_cov_args(["tests"]) == ["--no-cov"]
     assert config_mod._no_cov_args(["tests", "--no-cov"]) == []
     assert config_mod._no_cov_args(["-p", "no:cov"]) == []
+    assert config_mod._no_cov_args(["tests", "--disable-plugin-autoload"]) == []
+    assert config_mod._no_cov_args(["--disable-plugin-autoload", "-p", "pytest_cov"]) == ["--no-cov"]
     monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
     assert config_mod._no_cov_args(["tests"]) == []
+    assert config_mod._no_cov_args(["-ppytest_cov"]) == ["--no-cov"]
     monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD")
     monkeypatch.setattr(config_mod.importlib.util, "find_spec", lambda name: None)
     assert config_mod._no_cov_args(["tests"]) == []

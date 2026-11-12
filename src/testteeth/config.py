@@ -103,8 +103,16 @@ def _no_cov_args(test_args: list[str]) -> list[str]:
     Coverage of mutated code is meaningless, slows every mutant down, lets ``--cov-fail-under`` fail the
     baseline, and (before Python 3.12) replaces the line tracer testteeth relies on.
     """
-    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") or "--no-cov" in test_args:
+    if "--no-cov" in test_args:
         return []
+    autoload_off = bool(os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD")) or "--disable-plugin-autoload" in test_args
+    loaded = any(
+        arg in ("-ppytest_cov", "-ppytest_cov.plugin")
+        or (arg in ("pytest_cov", "pytest_cov.plugin") and index > 0 and test_args[index - 1] == "-p")
+        for index, arg in enumerate(test_args)
+    )
+    if autoload_off and not loaded:
+        return []  # pytest-cov will not be loaded, so `--no-cov` would be an unrecognised argument
     if any(arg in ("no:cov", "no:pytest_cov") or arg in ("-pno:cov", "-pno:pytest_cov") for arg in test_args):
         return []
     try:
