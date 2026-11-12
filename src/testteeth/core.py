@@ -43,6 +43,20 @@ def line_coverage(mutants: Iterable[Mutant]) -> dict[str, dict[int, bool]]:
     return result
 
 
+def position_coverage(mutants: Iterable[Mutant]) -> dict[str, dict[int, list[tuple[int, bool]]]]:
+    """Per file, per line: ``(start column, executed?)`` of every mutant starting on that line.
+
+    Finer than :func:`line_coverage`: on ``if (x <= 0) throw new Error("...")`` the condition is covered while
+    the ``throw`` is not, which only the columns can tell apart.
+    """
+    result: dict[str, dict[int, list[tuple[int, bool]]]] = {}
+    for mutant in mutants:
+        result.setdefault(mutant.file, {}).setdefault(mutant.line, []).append(
+            (mutant.col, mutant.status != NO_COVERAGE)
+        )
+    return result
+
+
 def char_to_byte_col(line_text: str, char_col: int) -> int:
     """Convert a 0-based character column to the UTF-8 byte column the span helpers expect."""
     return len(line_text[: max(char_col, 0)].encode("utf-8"))

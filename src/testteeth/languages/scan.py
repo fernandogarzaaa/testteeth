@@ -5,7 +5,7 @@ offsets and line numbers stay valid), then braces are matched and each block's *
 previous ``;``/``{``/``}`` and the ``{``) is classified with regular expressions. This is deliberately
 heuristic: it finds named functions, methods, closures assigned to names, classes / impl blocks and Rust test
 modules well enough to attribute mutants to functions and run the failure-path rule packs. Exotic syntax
-(regex literals containing quotes, object types in arrow-function parameters) can confuse it.
+(nested template literals, generic arrow functions) can confuse it.
 """
 
 from __future__ import annotations
@@ -64,7 +64,10 @@ def mask(source: str, lang: str) -> str:
             i = end + len(closing)
         elif c in "\"`" or (c == "'" and lang == TS):
             j = i + 1
-            while j < n and source[j] != c:
+            # Only template literals span lines in TypeScript/JavaScript: ending '...' and "..." at the line
+            # break keeps an apostrophe in JSX text or a quote in a regex literal from swallowing the file.
+            one_line = lang == TS and c != "`"
+            while j < n and source[j] != c and not (one_line and source[j] == "\n"):
                 j += 2 if source[j] == "\\" else 1
             blank(i + 1, j)
             i = j + 1
@@ -180,6 +183,7 @@ _TS_KEYWORDS = frozenset(
     "export default case throw delete void in of instanceof".split()
 )
 _TS_FUNCTION = re.compile(r"\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*(?:<[^()]*>)?\s*\(", re.S)
+_TS_DEFAULT_FUNCTION = re.compile(r"\bexport\s+default\s+(?:async\s+)?function\s*\*?\s*\(")
 _TS_ANON_FUNCTION = re.compile(r"(?:^|[\s(,=:])([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s+)?function\b[^{]*$", re.S)
 _TS_ARROW = re.compile(
     r"(?:^|[\s,;{(])(?:(?:export\s+)?(?:const|let|var)\s+)?(?:(?:public|private|protected|static|readonly)\s+)*"
@@ -201,12 +205,51 @@ _RS_MOD = re.compile(r"\bmod\s+([A-Za-z_]\w*)\s*$")
 _RS_TEST_ATTR = re.compile(r"#\[(?:\w+::)*(?:test|rstest|tokio::test|async_std::test|test_case)\b")
 
 
-def _header(masked: str, brace: int) -> tuple[str, int]:
-    k = brace - 1
-    while k >= 0 and masked[k] not in ";{}":
+_TS_RETURN_TYPE = re.compile(r"\)\s*:\s*$")
+
+
+def _open_brace(masked: str, close: int) -> int:
+    """Index of the ``{`` matching the ``}`` at ``close`` (or -1 if unbalanced)."""
+    depth = 0
+    for k in range(close, -1, -1):
+        ch = masked[k]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            depth -= 1
+            if depth == 0:
+                return k
+    return -1
+
+
+def _header(masked: str, brace: int, lang: str = "") -> tuple[str, int]:
+    """Text between the previous statement boundary and the ``{`` at ``brace``, and where it starts.
+
+    The walk back is bracket-aware: ``;``, ``{`` and ``}`` inside a parenthesised or bracketed group belong to
+    the header (``function f(opts = {})``, ``for (a; b; c)``, ``fn f(x: [u8; 4])``). A ``{`` that sits inside
+    a still-open ``(`` or ``[`` (a destructured parameter, an object argument, a callback) gets the text after
+    that opener as its header. A TypeScript object-literal return type (``f(): { a: number } {``) is skipped.
+    """
+    k, depth = brace - 1, 0
+    while k >= 0:
+        ch = masked[k]
+        if ch in ")]":
+            depth += 1
+        elif ch in "([":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and ch in ";{":
+            break
+        elif depth == 0 and ch == "}":
+            opener = _open_brace(masked, k) if lang == TS else -1
+            if opener > 0 and _TS_RETURN_TYPE.search(masked[max(opener - 200, 0) : opener]):
+                k = opener - 1
+                continue
+            break
         k -= 1
     start = k + 1
-    # Rust attributes like #[cfg(test)] never contain ; { } so they stay part of the header.
+    # Rust attributes like #[cfg(test)] are bracketed, so they stay part of the header.
     return masked[start:brace], start
 
 
@@ -232,6 +275,8 @@ def _classify(lang: str, header: str) -> tuple[str, str, bool]:
         if trait:
             return "scope", trait.group(1), False
         return "block", "", False
+    if text.endswith(":"):
+        return "block", "", False  # an object-literal type or value (`f(): { a: number }`, `key: {`)
     cls = _TS_CLASS.search(text)
     if cls and not text.rstrip().endswith(")"):
         return "scope", cls.group(1), False
@@ -239,6 +284,8 @@ def _classify(lang: str, header: str) -> tuple[str, str, bool]:
     is_async = bool(re.search(r"\basync\b", text))
     if fn:
         return "function", fn.group(1), is_async
+    if _TS_DEFAULT_FUNCTION.search(text):
+        return "function", "default", is_async
     if text.endswith("=>"):
         arrow = _TS_ARROW.search(" " + text)
         if arrow:
@@ -265,7 +312,7 @@ def scan(source: str, lang: str) -> Scan:
             continue
         while stack and stack[-1][0] < k:
             stack.pop()
-        header, hstart = _header(masked, k)
+        header, hstart = _header(masked, k, lang)
         kind, name, is_async = _classify(lang, header)
         close = match_brace(masked, k)
         in_test = any(entry[3] for entry in stack)

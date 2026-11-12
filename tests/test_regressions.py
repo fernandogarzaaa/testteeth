@@ -287,3 +287,90 @@ def test_rust_base_ref_selects_only_the_changed_function(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "check_installed", lambda: "cargo")
     report = rs.CargoMutantsAdapter().grade(load_settings(root, lang="rust", base_ref="HEAD"))
     assert {gap.function for gap in report.gaps} == {"b"}
+
+
+# ---------------------------------------------------------------- brace scanner (TypeScript / Rust)
+def _ranges(source: str, lang: str) -> dict[str, tuple[int, int]]:
+    from testteeth.languages.scan import scan
+
+    return {f.qualname: (f.line, f.end_line) for f in scan(source, lang).functions}
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "export function load(opts = {}) {",
+        "function load({ strict, a }) {",
+        "function load(opts: { strict: boolean }, b) {",
+        "function load(opts): { a: number } {",
+        "const load = ({ strict, a }) => {",
+        "export default async function load(opts = {}) {",
+    ],
+)
+def test_ts_braces_in_the_signature_do_not_end_the_function(signature):
+    source = f"{signature}\n  if (opts.strict) {{\n    throw new Error('strict');\n  }}\n  return 1;\n}}\nfunction next() {{\n  return 2;\n}}\n"
+    assert _ranges(source, "typescript") == {"load": (1, 6), "next": (7, 9)}
+
+
+def test_ts_quotes_do_not_swallow_following_functions():
+    jsx = "export function A() {\n  return <p>Don't</p>;\n}\nexport function B(x) {\n  if (x > 1) {\n    return 1;\n  }\n  return 2;\n}\n"
+    assert _ranges(jsx, "typescript") == {"A": (1, 3), "B": (4, 9)}
+    regex = "function a(s) {\n  return s.replace(/'/g, '');\n}\nfunction b() {\n  return 1;\n}\n"
+    assert _ranges(regex, "typescript") == {"a": (1, 3), "b": (4, 6)}
+
+
+def test_ts_callbacks_are_not_named_after_their_callee():
+    source = "function schedule(cb) {\n  setTimeout(function () {\n    cb();\n  }, 10);\n  for (let i = 0; i < 2; i++) {\n    cb();\n  }\n}\n"
+    assert _ranges(source, "typescript") == {"schedule": (1, 8)}
+    assert _ranges("export default function () {\n  return 1;\n}\n", "typescript") == {"default": (1, 3)}
+
+
+def test_rust_semicolons_in_the_signature_do_not_hide_the_function():
+    source = (
+        "pub fn load_key(path: &str, salt: [u8; 4]) -> Result<Vec<u8>, std::io::Error> {\n"
+        "    let data = std::fs::read(path)?;\n    Ok(data)\n}\n"
+        "fn zero() -> [u8; 4] {\n    [0; 4]\n}\n"
+        "impl Key {\n    pub fn new(seed: [u8; 16]) -> Self {\n        Key { seed }\n    }\n}\n"
+    )
+    assert _ranges(source, "rust") == {"load_key": (1, 4), "zero": (5, 7), "Key::new": (9, 11)}
+
+
+# ---------------------------------------------------------------- failure-path rule packs
+def _gaps(source: str, lang: str, tests: list[str], **kw) -> list[tuple[str, str]]:
+    from testteeth.languages.scan import scan
+    from testteeth.rules import analyze
+
+    return [(g.function, g.kind) for g in analyze(scan(source, lang), "f", tests, **kw)]
+
+
+def test_ts_throw_on_a_covered_guard_line_is_still_a_gap():
+    """`if (..) throw ..` on one line: the condition ran, the throw did not."""
+    source = "export function pay(amount) {\n  if (amount <= 0) throw new RangeError('amount must be positive');\n  return amount;\n}\n"
+    throw_col = source.splitlines()[1].index("throw")
+    kw = {"coverage": {2: True, 3: True}}
+    assert _gaps(source, "typescript", ["it('pays', () => { pay(1); })"], **kw) == []  # columns unknown: no claim
+    positions = {2: [(6, True), (throw_col + 21, False)], 3: [(2, True)]}
+    assert _gaps(source, "typescript", ["it('pays', () => { pay(1); })"], positions=positions, **kw) == [("pay", "throw")]
+    ran = {2: [(6, True), (throw_col + 21, True)]}
+    assert _gaps(source, "typescript", ["it('pays', () => { pay(1); })"], positions=ran, **kw) == []
+
+
+def test_ts_uncovered_catch_block_is_reported_even_when_a_test_mentions_failure():
+    source = "export async function load(client) {\n  try {\n    return await client.get('/x');\n  } catch (err) {\n    report(err);\n    return null;\n  }\n}\n"
+    tests = ["it('loads', async () => { await load(c); expect(() => other()).toThrow(); })"]
+    # Stryker's only verdict for the handler is its block mutant on the `catch (err) {` line: NoCoverage.
+    gaps = _gaps(source, "typescript", tests, coverage={3: True, 4: False})
+    assert ("load", "catch-branch") in gaps
+
+
+def test_rust_err_patterns_are_not_error_returns():
+    source = (
+        "fn is_bad(r: Result<u8, E>) -> bool {\n    matches!(r, Err(_)) || r == Err(E::A)\n}\n"
+        "fn code(r: Option<Result<u8, E>>) -> u8 {\n    match r {\n        Some(Err(_)) => 0,\n        _ => 1,\n    }\n}\n"
+        "fn guarded(r: Result<u8, E>) -> u8 {\n    match r {\n        Err(e) if e.code == 2 => 0,\n        _ => 1,\n    }\n}\n"
+        "fn fails() -> Result<u8, E> {\n    Err(E::A)\n}\n"
+    )
+    gaps = _gaps(source, "rust", ["fn t() { is_bad(x); code(x); guarded(x); fails(); }"])
+    assert ("fails", "error-return") in gaps
+    assert [g for g in gaps if g[1] == "error-return"] == [("fails", "error-return")]
+    assert ("guarded", "match-err") in gaps and ("code", "match-err") in gaps

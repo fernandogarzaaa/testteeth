@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config import DEFAULT_EXCLUDE, ConfigError
-from ..core import line_coverage, read_text, walk_files
+from ..core import line_coverage, position_coverage, read_text, walk_files
 from ..diff import ALL_LINES, changed_lines
 from ..errors import BaselineFailed, EngineCrashed, EngineError, EngineNotInstalled, ReportError
 from ..models import KILLED, NO_COVERAGE, SURVIVED, TIMEOUT, GradeReport, Mutant
@@ -373,11 +373,13 @@ class StrykerAdapter:
             }
         bodies = [body for text in tests.values() for body in test_bodies(text, LANG)]
         coverage = line_coverage(mutants)
+        positions = position_coverage(mutants)
         for rel, (_, lines) in selection.items():
             scanned = cache.scan(rel)
             if scanned is None:
                 continue
-            report.gaps.extend(analyze(scanned, rel, bodies, selected_functions(cache, rel, lines), coverage.get(rel)))
+            report.gaps.extend(analyze(scanned, rel, bodies, selected_functions(cache, rel, lines), coverage.get(rel),
+                                       positions.get(rel)))
         return finish(report, started, progress)
 
     @staticmethod

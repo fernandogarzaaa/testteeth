@@ -56,7 +56,8 @@ def _err_arms(masked: str) -> list[int]:
     for match in ERR_CALL.finditer(masked):
         close = match_paren(masked, match.end() - 1)
         tail = masked[close + 1 : close + 200]
-        if re.match(r"\s*(?:if\b[^=]*)?=>", tail):
+        # `Err(e) =>`, `Some(Err(_)) =>`, `Err(A) | Err(B) =>`, `Err(e) if e.code == 2 =>`
+        if re.match(r"[\s)]*(?:\|[^;{}]*?)?(?:if\b[^;{}]*?)?=>", tail):
             arms.append(match.start())
     return arms
 
@@ -84,9 +85,9 @@ def analyze_rust(
     for match in list(ERR_CALL.finditer(masked)) + list(ERR_MACRO.finditer(masked)):
         if match.start() in arm_offsets:
             continue
-        before = masked[max(0, match.start() - 12) : match.start()]
-        if re.search(r"\blet\s+$|\blet\s+$", before):
-            continue
+        before = masked[max(0, match.start() - 120) : match.start()]
+        if re.search(r"\blet\s+$|[=!]=\s*$|\bmatches!\s*\([^;{}]*$", before):
+            continue  # a pattern or a comparison, not an error being returned
         func = col.owner(match.start())
         if func is not None:
             returns.setdefault(func.qualname, []).append(scan_.index.line(match.start()))

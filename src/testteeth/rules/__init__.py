@@ -25,6 +25,7 @@ def analyze(
     test_bodies: list[str],
     selected: set[str] | None = None,
     coverage: dict[int, bool] | None = None,
+    positions: dict[int, list[tuple[int, bool]]] | None = None,
 ) -> list[FailurePathGap]:
     """Failure-path gaps for one scanned TypeScript/JavaScript or Rust file."""
     if scan.lang == "rust":
@@ -33,7 +34,7 @@ def analyze(
         return analyze_rust(scan, rel_path, test_bodies, selected)
     from .typescript import analyze_typescript
 
-    return analyze_typescript(scan, rel_path, test_bodies, selected, coverage)
+    return analyze_typescript(scan, rel_path, test_bodies, selected, coverage, positions)
 
 
 def test_bodies(source: str, lang: str) -> list[str]:

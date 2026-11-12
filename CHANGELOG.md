@@ -14,6 +14,16 @@
   ref when there is none).
 - **Rust `--base` graded unchanged neighbours.** Context lines of the diff handed to `cargo mutants --in-diff`
   counted as changed lines, so functions next to the edit received failure-path gaps.
+- **TypeScript/Rust function ranges.** A `{` or `;` inside a signature ended or hid the function
+  (`function f(opts = {})`, destructured and object-typed parameters, object-literal return types,
+  `fn f(salt: [u8; 4])`), so its mutants were attributed to `<module>`, its failure-path gaps were lost and
+  `--base` did not select it. An apostrophe in JSX text or a quote in a regex literal swallowed the functions
+  that followed. Callbacks (`setTimeout(function () {`) are no longer named after their callee, and
+  `export default function () {` is recognised.
+- **TypeScript failure paths.** A `throw` on the same line as its covered guard (`if (x <= 0) throw ...`) and a
+  `catch` block whose only StrykerJS verdict is "no coverage" on the `catch (e) {` line were not reported.
+- **Rust failure paths.** `Err(..)` in patterns and comparisons (`matches!(r, Err(_))`, `r == Err(..)`,
+  `Some(Err(_)) =>`, `Err(e) if e.code == 2 =>`) was counted as an error return.
 - Non-ASCII file names were dropped from `--base` selection (git quotes them by default).
 - Failure injected through a test decorator (`@patch(..., side_effect=TimeoutError)`) was not seen by the Python
   failure-path check, which reported a false gap.
