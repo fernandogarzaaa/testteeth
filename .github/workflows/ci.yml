@@ -68,7 +68,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e .
+      - run: pip install -e ".[dev]"  # the suite needs the MCP SDK and the pytest plugins it tests against
       - name: Grade tests for functions changed in this PR
         run: testteeth run --base "origin/${{ github.base_ref }}" --fail-under 70 --json mutation.json
 
