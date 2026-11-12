@@ -477,3 +477,59 @@ def test_ts_swallowed_error_brief_speaks_typescript(make_mutant):
                          original="{\n    report(e);\n  }", replacement="{}", exception="the error")
     brief = build_one_brief(mutant, source)
     assert "`catch` block can be emptied" in brief.why_missed and "except" not in brief.why_missed
+
+
+# ---------------------------------------------------------------- review findings
+def test_pragma_counts_only_in_comments_and_protects_the_whole_span():
+    in_string = 'def f(x):\n    return x + len("# pragma: no mutate")\n'
+    assert {m.operator for m in generate_mutants(in_string, "m.py")} == {"arithmetic", "return-value"}
+    spanning = "def f(x):\n    return (\n        x + 1  # pragma: no mutate\n    )\n"
+    assert generate_mutants(spanning, "m.py") == []  # `return None` would remove the protected expression
+
+
+def test_skipped_tests_are_not_failure_evidence():
+    from testteeth.failure_paths import analyze_module
+
+    source = "import requests\n\n\ndef fetch(url):\n    return requests.get(url).json()\n"
+    tests = (
+        "import pytest\n\n\ndef test_fetch():\n    assert fetch('u')\n\n\n"
+        "@pytest.mark.{mark}\ndef test_fetch_times_out():\n    with pytest.raises(TimeoutError):\n        fetch('u')\n"
+    )
+    skipped = tests.format(mark='skip(reason="TimeoutError")')
+    assert [g.kind for g in analyze_module(source, "m.py", None, [skipped], {"fetch"})] == ["external-call"]
+    conditional = tests.format(mark='skipif(False, reason="x")')
+    assert analyze_module(source, "m.py", None, [conditional], {"fetch"}) == []
+
+
+def test_acronym_client_names_are_clients():
+    import ast
+
+    from testteeth.failure_paths import external_call_name
+
+    for receiver in ("APIClient", "self.HTTPSession", "DBConn"):
+        assert external_call_name(ast.parse(f"{receiver}.get('x')").body[0].value) is not None, receiver
+
+
+def test_ts_line_comment_ends_at_a_unicode_line_separator():
+    source = "// note function f() {\n  return 1;\n}\n"
+    assert _ranges(source, "typescript") == {"f": (2, 4)}
+
+
+def test_ts_throw_gap_is_not_hidden_by_later_code_on_the_line():
+    source = "export function pay(x) {\n  if (x) throw new Error('x'); return 1;\n}\n"
+    line = source.splitlines()[1]
+    positions = {2: [(6, True), (line.index("'x'"), False), (line.index("1;"), True)]}
+    gaps = _gaps(source, "typescript", ["it('pays', () => { pay(0); })"], coverage={2: True}, positions=positions)
+    assert gaps == [("pay", "throw")]
+
+
+def test_unreadable_files_are_named_instead_of_reported_clean(tmp_path, make_mutant):
+    from testteeth.suggest import build_briefs, render_markdown, unreadable_sources
+
+    report = GradeReport(root=str(tmp_path), base_ref=None, test_command=[], mutants=[make_mutant(file="gone.py")])
+    sources = read_sources(tmp_path, report)
+    skipped = unreadable_sources(report, sources)
+    assert skipped == ["gone.py"]
+    text = render_markdown(build_briefs(report, sources), [], None, skipped)
+    assert "gone.py" in text and "already pin this code down" not in text
+    assert "already pin this code down" in render_markdown([], [])

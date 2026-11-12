@@ -81,7 +81,7 @@ def _looks_like_client(receiver: str) -> bool:
 
     Whole words only: ``capitals.get()`` and ``feedback.get()`` contain "api" and "db" but are not clients.
     """
-    words = re.findall(r"[a-z]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", receiver).lower())
+    words = re.findall(r"[a-z]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", receiver).lower())
     return any(
         word == hint or word == hint + "s" or (hint == "conn" and word.startswith("conn"))
         for word in words
@@ -114,6 +114,10 @@ def _retry_loops(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.stmt]
     return loops
 
 
+#: Unconditional skips: ``@pytest.mark.skip(...)``, ``@unittest.skip(...)``, ``@skip``; not ``skipif`` / ``skipIf``.
+_SKIP_DECORATOR = re.compile(r"(?:^|\.)skip(?:\(|$)")
+
+
 def _test_functions(test_sources: Iterable[str]) -> list[str]:
     bodies: list[str] = []
     for source in test_sources:
@@ -124,6 +128,8 @@ def _test_functions(test_sources: Iterable[str]) -> list[str]:
         lines = split_lines(source)
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+                if any(_SKIP_DECORATOR.search(ast.unparse(d)) for d in node.decorator_list):
+                    continue  # a test that never runs proves nothing, whatever its decorators mention
                 # Decorators count: `@patch(..., side_effect=TimeoutError)` is where many tests inject the failure.
                 start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
                 bodies.append("\n".join(lines[start - 1 : node.end_lineno]))

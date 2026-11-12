@@ -61,12 +61,15 @@ def analyze_typescript(
     coverage = coverage or {}
     positions = positions or {}
 
-    def runs_from(line: int, offset: int) -> bool:
-        """Did any mutant starting on ``line`` at or after ``offset`` run? (True when there is none to tell.)"""
+    def throw_ran(line: int, offset: int) -> bool:
+        """Did any mutant inside the ``throw`` statement at ``offset`` run? (True when there is none to tell.)"""
         start = scan.index.offset(line)
-        column = len(scan.source[start:offset].encode("utf-8"))
-        after = [ran for at, ran in positions.get(line, []) if at >= column]
-        return any(after) or not after
+        stop = re.compile(r"[;\n\r\u2028\u2029]").search(masked, offset)
+        end = len(masked) if stop is None else stop.start()
+        first = len(scan.source[start:offset].encode("utf-8"))
+        last = len(scan.source[start:end].encode("utf-8"))
+        inside = [ran for at, ran in positions.get(line, []) if first <= at < last]
+        return any(inside) or not inside
 
     handler_ran: dict[str, bool] = {}
     catch_lines: set[int] = set()
@@ -103,7 +106,7 @@ def analyze_typescript(
 
     for qualname, hits in col.per_function(THROW, masked).items():
         for func, line, match in hits:
-            if line in catch_lines or (coverage.get(line, True) and runs_from(line, match.start())):
+            if line in catch_lines or (coverage.get(line, True) and throw_ran(line, match.start())):
                 continue
             what = match.group(1) or "error"
             col.add(func, "throw", line, f"`throw {what}` is never triggered by any test", once=False)

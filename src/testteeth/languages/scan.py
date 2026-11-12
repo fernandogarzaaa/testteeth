@@ -28,10 +28,11 @@ def mask(source: str, lang: str) -> str:
     out = list(source)
     n = len(source)
     i = 0
+    keep = "\n\r\u2028\u2029" if lang == TS else "\n"  # line breaks survive masking so line numbers hold
 
     def blank(start: int, end: int) -> None:
         for k in range(max(start, 0), min(end, n)):
-            if out[k] != "\n":
+            if out[k] not in keep:
                 out[k] = " "
 
     in_template = False  # inside the text of a TypeScript/JavaScript template literal
@@ -71,8 +72,8 @@ def mask(source: str, lang: str) -> str:
                 depths[-1] -= 1
             i += 1
         elif c == "/" and nxt == "/":
-            end = source.find("\n", i)
-            end = n if end == -1 else end
+            ending = line_break(lang).search(source, i)  # U+2028/U+2029 also end a JavaScript comment
+            end = n if ending is None else ending.start()
             blank(i, end)
             i = end
         elif c == "/" and nxt == "*":

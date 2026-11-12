@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import ast
 import copy
+import io
 import re
+import tokenize
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -131,6 +133,20 @@ def _exception_name(node: ast.AST | None) -> str:
     return _dotted(node)
 
 
+def _no_mutate_lines(source: str) -> set[int]:
+    """Lines carrying a ``# pragma: no mutate`` *comment* (the same text inside a string does not count)."""
+    if "pragma" not in source:
+        return set()
+    lines: set[int] = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT and NO_MUTATE.search(token.string):
+                lines.add(token.start[0])
+    except (tokenize.TokenError, IndentationError, SyntaxError):  # pragma: no cover - the source already parsed
+        pass
+    return lines
+
+
 class MutantGenerator:
     """Walks a module and yields every mutant it can make."""
 
@@ -149,10 +165,10 @@ class MutantGenerator:
         tree = ast.parse(self.source)
         self._body(tree.body)
         valid: list[Mutant] = []
-        skipped = {number for number, text in enumerate(self._lines, start=1) if NO_MUTATE.search(text)}
+        skipped = _no_mutate_lines(self.source)
         for mutant in self._out:
-            if mutant.line in skipped:
-                continue
+            if any(mutant.line <= line <= mutant.end_line for line in skipped):
+                continue  # the replaced span touches a protected line
             try:
                 compile(apply_mutant(self.source, mutant), self.rel_path, "exec")
             except (SyntaxError, ValueError):

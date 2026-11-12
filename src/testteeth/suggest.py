@@ -333,9 +333,27 @@ def build_briefs(report: GradeReport, sources: dict[str, str]) -> list[TestBrief
 _FENCE = {"python": "python", "typescript": "ts", "rust": "rust"}
 
 
-def render_markdown(briefs: list[TestBrief], gaps: list[FailurePathGap], limit: int | None = None) -> str:
-    """Render briefs as Markdown a coding agent can act on directly."""
+def unreadable_sources(report: GradeReport, sources: dict[str, str]) -> list[str]:
+    """Files with surviving mutants whose source could not be read, so no brief could be written for them."""
+    return sorted({m.file for m in report.surviving()} - set(sources))
+
+
+def _skipped_note(skipped: list[str]) -> list[str]:
+    files = ", ".join(f"`{name}`" for name in skipped)
+    return [f"_No briefs for surviving mutants in {files}: the file is missing or not UTF-8._", ""]
+
+
+def render_markdown(
+    briefs: list[TestBrief], gaps: list[FailurePathGap], limit: int | None = None, skipped: list[str] | None = None
+) -> str:
+    """Render briefs as Markdown a coding agent can act on directly.
+
+    ``skipped`` names files whose surviving mutants have no brief (see :func:`unreadable_sources`), so a
+    clean-looking result never hides them.
+    """
     if not briefs and not gaps:
+        if skipped:
+            return "\n".join(["# Missing tests (testteeth)", "", *_skipped_note(skipped)])
         return "No surviving mutants and no failure-path gaps: the tests already pin this code down.\n"
     out = [
         "# Missing tests (testteeth)",
@@ -376,4 +394,6 @@ def render_markdown(briefs: list[TestBrief], gaps: list[FailurePathGap], limit: 
             out.append(f"- `{gap.function}` {gap.file}:{gap.line} [{gap.kind}] {gap.detail}. "
                        f"Test: {gap_brief(gap)['must_assert']}.")
         out.append("")
+    if skipped:
+        out += _skipped_note(skipped)
     return "\n".join(out)

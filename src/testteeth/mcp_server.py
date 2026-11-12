@@ -22,7 +22,7 @@ from .diff import GitError
 from .errors import BaselineFailed, EngineCrashed, EngineError, EngineNotInstalled
 from .languages import grade_project as grade
 from .models import GradeReport
-from .suggest import build_briefs, gap_brief, read_sources, render_markdown
+from .suggest import build_briefs, gap_brief, read_sources, render_markdown, unreadable_sources
 
 INSTRUCTIONS = (
     "testteeth grades a project's tests with mutation testing (Python built in; TypeScript/JavaScript via StrykerJS; "
@@ -157,6 +157,7 @@ def suggest_missing_tests(path: str = ".", base_ref: str | None = None, pytest_a
         return _error(exc)
     sources = read_sources(settings.root, report)
     briefs = build_briefs(report, sources)
+    skipped = unreadable_sources(report, sources)
     shown = briefs[:limit] if limit else briefs
     return {
         "lang": report.lang,
@@ -164,7 +165,8 @@ def suggest_missing_tests(path: str = ".", base_ref: str | None = None, pytest_a
         "total_briefs": len(briefs),
         "briefs": [b.to_dict() for b in shown],
         "failure_path_gaps": [gap_brief(g) for g in report.gaps],
-        "markdown": render_markdown(briefs, report.gaps, limit or None),
+        "skipped_files": skipped,
+        "markdown": render_markdown(briefs, report.gaps, limit or None, skipped),
     }
 
 

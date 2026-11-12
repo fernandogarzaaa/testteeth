@@ -43,9 +43,13 @@
 - `pytest --testteeth -n N` no longer attempts to grade inside xdist workers, and `--collect-only` skips grading.
 - `testteeth suggest` and the MCP `suggest_missing_tests` tool no longer crash when a mutated file was deleted
   or is not UTF-8; the MCP result cache now distinguishes `max_mutants`.
+- `testteeth suggest` and the MCP tool name the files whose surviving mutants got no brief (missing or not
+  UTF-8) instead of reporting a clean result.
+- CI checkouts no longer persist the GitHub token (`persist-credentials: false`).
 
 ### Added
-- `# pragma: no mutate` on a Python line excludes it from mutation (for reviewed equivalent mutants).
+- `# pragma: no mutate` in a comment on a Python line excludes every mutant whose replaced span touches that
+  line (for reviewed equivalent mutants).
 - Python 3.13 and 3.14 are tested in CI; ruff and mypy configurations are part of the project and enforced in CI.
 
 ## 0.2.0 - 2026-10-08
