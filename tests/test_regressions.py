@@ -483,6 +483,8 @@ def test_ts_swallowed_error_brief_speaks_typescript(make_mutant):
 def test_pragma_counts_only_in_comments_and_protects_the_whole_span():
     in_string = 'def f(x):\n    return x + len("# pragma: no mutate")\n'
     assert {m.operator for m in generate_mutants(in_string, "m.py")} == {"arithmetic", "return-value"}
+    upper = "def f(x):\n    return x + 1  # PRAGMA: NO MUTATE\n"
+    assert generate_mutants(upper, "m.py") == []
     spanning = "def f(x):\n    return (\n        x + 1  # pragma: no mutate\n    )\n"
     assert generate_mutants(spanning, "m.py") == []  # `return None` would remove the protected expression
 

@@ -135,7 +135,7 @@ def _exception_name(node: ast.AST | None) -> str:
 
 def _no_mutate_lines(source: str) -> set[int]:
     """Lines carrying a ``# pragma: no mutate`` *comment* (the same text inside a string does not count)."""
-    if "pragma" not in source:
+    if not NO_MUTATE.search(source):  # cheap pre-check before tokenizing; same case-insensitive pattern
         return set()
     lines: set[int] = set()
     try:
