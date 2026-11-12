@@ -24,6 +24,16 @@
   `catch` block whose only StrykerJS verdict is "no coverage" on the `catch (e) {` line were not reported.
 - **Rust failure paths.** `Err(..)` in patterns and comparisons (`matches!(r, Err(_))`, `r == Err(..)`,
   `Some(Err(_)) =>`, `Err(e) if e.code == 2 =>`) was counted as an error return.
+- **Mutant spans shifted by unusual characters.** Lines were split with `str.splitlines()`, which also breaks on
+  form feeds, U+2028 and a few other characters that parsers do not treat as line breaks, so every mutant after
+  one had the wrong text. Lines are now split by each language's own rules (Python, ECMAScript, Rust).
+- **StrykerJS columns are UTF-16 code units.** After an emoji (or any astral character) on the same line the
+  mutant's original text and brief were off by one per character.
+- **Nested template literals** (`` `${xs.map(x => `{${x}`)}` ``) unbalanced the TypeScript scanner's braces;
+  `${...}` expressions are now scanned as code. Generic arrow functions (`async <T,>(a: T) => {`) are detected.
+- **Python external-call check matched substrings**: `capitals.get()` and `feedback.get()` counted as client
+  calls because they contain "api" and "db". Whole words are matched now (`api_client`, `apiClient`, `self.db`).
+- TypeScript briefs for an emptied `catch` block used Python wording (`except`, `pass`).
 - Non-ASCII file names were dropped from `--base` selection (git quotes them by default).
 - Failure injected through a test decorator (`@patch(..., side_effect=TimeoutError)`) was not seen by the Python
   failure-path check, which reported a false gap.

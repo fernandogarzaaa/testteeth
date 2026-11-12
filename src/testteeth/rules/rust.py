@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 from ..languages.scan import Scan, block_lines, match_paren, scan
+from ..lines import split_lines
 from ..models import FailurePathGap
 from ._common import RETRY_WORDS, GapCollector, failure_tested, first_names
 
@@ -118,7 +119,7 @@ def analyze_rust(
         for _, line, match in hits:
             header = " ".join(g for g in match.groups() if g)
             first, last, _ = block_lines(masked, scan_.index, match.end() - 1)
-            body = "\n".join(masked.splitlines()[first - 1 : last])
+            body = "\n".join(split_lines(masked, LANG)[first - 1 : last])
             fallible = bool(re.search(r"\bErr\b|\?|\bmatch\b", body))
             if (RETRY_WORDS.search(header) or (retry_name and fallible)) and not exercised(qualname):
                 col.add(func, "retry", line,

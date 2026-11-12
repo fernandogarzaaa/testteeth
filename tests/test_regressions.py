@@ -374,3 +374,103 @@ def test_rust_err_patterns_are_not_error_returns():
     assert ("fails", "error-return") in gaps
     assert [g for g in gaps if g[1] == "error-return"] == [("fails", "error-return")]
     assert ("guarded", "match-err") in gaps and ("code", "match-err") in gaps
+
+
+# ---------------------------------------------------------------- lines, columns, templates, client names
+def test_form_feed_does_not_shift_python_mutants():
+    """`str.splitlines` breaks on \\f; Python's parser does not."""
+    from testteeth.operators import apply_mutant, matches_source
+
+    source = "import os\n\x0c\ndef f(a, b):\n    return a < b\n"
+    mutant = next(m for m in generate_mutants(source, "m.py") if m.operator == "comparison")
+    assert mutant.line == 4 and mutant.original == "a < b"
+    assert matches_source(source, mutant)
+    assert apply_mutant(source, mutant) == source.replace("a < b", "(a <= b)")
+
+
+def test_line_rules_per_language():
+    from testteeth.lines import split_lines
+
+    text = "a\x0cb c\r\nd\n"
+    assert split_lines(text, "python") == ["a\x0cb c", "d"]
+    assert split_lines(text, "rust") == ["a\x0cb c\r", "d"]
+    assert split_lines(text, "typescript") == ["a\x0cb", "c", "d"]
+    assert split_lines(text, "typescript", keepends=True) == ["a\x0cb ", "c\r\n", "d\n"]
+    assert "".join(split_lines(text, "rust", keepends=True)) == text
+
+
+def _stryker(source: str, start: tuple[int, int], end: tuple[int, int], tmp_path: Path):
+    from testteeth.languages.typescript import parse_report
+
+    location = {"start": {"line": start[0], "column": start[1]}, "end": {"line": end[0], "column": end[1]}}
+    entry = {"id": "1", "mutatorName": "EqualityOperator", "replacement": "a >= 1", "status": "Survived",
+             "location": location}
+    report = {"files": {"src/a.ts": {"language": "typescript", "source": source, "mutants": [entry]}}}
+    mutants, _, _ = parse_report(report, tmp_path)
+    return mutants[0]
+
+
+def test_stryker_columns_are_utf16_code_units(tmp_path):
+    source = "export function f(a) {\n  const s = '😀😀'; return a > 1;\n}\n"
+    line = source.split("\n")[1]
+    start = len(line[: line.index("a > 1")].encode("utf-16-le")) // 2 + 1  # what Babel reports
+    mutant = _stryker(source, (2, start), (2, start + 5), tmp_path)
+    assert mutant.original == "a > 1" and mutant.function == "f"
+    brief = build_one_brief(mutant, source)
+    assert "return a >= 1;" in brief.mutated_code
+
+
+def test_form_feed_does_not_shift_typescript_mutants(tmp_path):
+    source = "// header\x0c\nexport function f(a) {\n  return a > 1;\n}\n"
+    mutant = _stryker(source, (3, 10), (3, 15), tmp_path)
+    assert mutant.original == "a > 1" and mutant.function == "f"
+    assert "return a >= 1;" in build_one_brief(mutant, source).mutated_code
+
+
+def build_one_brief(mutant, source):
+    from testteeth.suggest import brief_for
+
+    return brief_for(mutant, source, "typescript")
+
+
+def test_ts_nested_template_literals_stay_balanced():
+    source = (
+        "export function render(xs) {\n"
+        "  return `<ul>${xs.map((x) => `<li class=\"{a}\">${x.ok ? `{${x.name}}` : '}'}</li>`).join('')}</ul>`;\n"
+        "}\n"
+        "export function after(a) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n"
+    )
+    assert _ranges(source, "typescript") == {"render": (1, 3), "after": (4, 9)}
+
+
+def test_ts_generic_arrow_functions_are_found():
+    source = (
+        "export const first = async <T,>(items: T[]): Promise<T> => {\n  return items[0];\n};\n"
+        "const pick = <T, K extends keyof T>(o: T, k: K) => o[k];\n"
+    )
+    assert _ranges(source, "typescript") == {"first": (1, 3), "pick": (4, 4)}
+
+
+@pytest.mark.parametrize(
+    ("receiver", "external"),
+    [
+        ("capitals", False), ("feedback", False), ("therapist", False), ("dbase_rows", False),
+        ("client", True), ("self.http_client", True), ("apiClient", True), ("db", True), ("self._db", True),
+        ("connection", True), ("sessions", True), ("gateway", True),
+    ],
+)
+def test_client_hints_match_whole_words(receiver, external):
+    import ast
+
+    from testteeth.failure_paths import external_call_name
+
+    call = ast.parse(f"{receiver}.get('x')").body[0].value
+    assert (external_call_name(call) is not None) is external
+
+
+def test_ts_swallowed_error_brief_speaks_typescript(make_mutant):
+    source = "function f() {\n  try {\n    g();\n  } catch (e) {\n    report(e);\n  }\n}\n"
+    mutant = make_mutant(file="a.ts", function="f", line=4, col=14, end_line=6, end_col=3, operator="swallow-exception",
+                         original="{\n    report(e);\n  }", replacement="{}", exception="the error")
+    brief = build_one_brief(mutant, source)
+    assert "`catch` block can be emptied" in brief.why_missed and "except" not in brief.why_missed

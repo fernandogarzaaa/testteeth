@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import idioms
+from .lines import split_lines
 from .models import NO_COVERAGE, FailurePathGap, GradeReport, Mutant
 from .operators import apply_mutant, matches_source
 
@@ -78,8 +79,8 @@ class TestBrief:
         return asdict(self)
 
 
-def _lines(source: str, start: int, end: int) -> str:
-    return textwrap.dedent("\n".join(source.splitlines()[start - 1 : end])).strip()
+def _lines(source: str, start: int, end: int, lang: str = "python") -> str:
+    return textwrap.dedent("\n".join(split_lines(source, lang)[start - 1 : end])).strip()
 
 
 def _slug(text: str) -> str:
@@ -161,10 +162,13 @@ def _why_and_what(m: Mutant, lang: str = "python", line_text: str = "") -> tuple
         )
     if op == "swallow-exception":
         exc = m.exception or "the exception"
+        if lang == "python":
+            handler, verb = f"The `except {exc}` handler can be replaced by `pass`", "raise"
+        else:
+            handler, verb = "The `catch` block can be emptied", "throw"
         return (
-            f"The `except {exc}` handler can be replaced by `pass` and nothing fails: no test makes the guarded "
-            "code raise and checks what the handler does.",
-            f"make the code inside the `try` raise `{exc}` (e.g. "
+            f"{handler} and nothing fails: no test makes the guarded code {verb} and checks what the handler does.",
+            f"make the code inside the `try` {verb} `{exc}` (e.g. "
             + idioms.FAKE_FAILURE.get(lang, idioms.FAKE_FAILURE["python"]).format(
                 exc=exc.split(",")[0].strip("() ") if lang == "python" else "Error"
             )
@@ -248,11 +252,12 @@ def _function_is_async(source: str, mutant: Mutant, lang: str) -> bool:
 
 def brief_for(mutant: Mutant, source: str, lang: str = "python") -> TestBrief:
     """Build the brief for one surviving mutant, given the original source of its file."""
-    mutated_source = apply_mutant(source, mutant)
-    delta = len(mutated_source.splitlines()) - len(source.splitlines())
-    original_code = _lines(source, mutant.line, mutant.end_line)
-    mutated_code = _lines(mutated_source, mutant.line, mutant.end_line + delta)
-    line_text = source.splitlines()[mutant.line - 1] if 0 < mutant.line <= len(source.splitlines()) else ""
+    mutated_source = apply_mutant(source, mutant, lang)
+    source_lines = split_lines(source, lang)
+    delta = len(split_lines(mutated_source, lang)) - len(source_lines)
+    original_code = _lines(source, mutant.line, mutant.end_line, lang)
+    mutated_code = _lines(mutated_source, mutant.line, mutant.end_line + delta, lang)
+    line_text = source_lines[mutant.line - 1] if 0 < mutant.line <= len(source_lines) else ""
     why, what = _why_and_what(mutant, lang, line_text)
     if mutant.status == NO_COVERAGE:
         where = f" inside `{mutant.context}`" if mutant.context else ""
@@ -319,7 +324,7 @@ def build_briefs(report: GradeReport, sources: dict[str, str]) -> list[TestBrief
     briefs = [
         brief_for(m, sources[m.file], report.lang)
         for m in report.surviving()
-        if m.file in sources and matches_source(sources[m.file], m)
+        if m.file in sources and matches_source(sources[m.file], m, report.lang)
     ]
     briefs.sort(key=lambda b: (not b.failure_path, b.file, b.line))
     return briefs

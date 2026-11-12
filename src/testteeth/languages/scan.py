@@ -5,7 +5,7 @@ offsets and line numbers stay valid), then braces are matched and each block's *
 previous ``;``/``{``/``}`` and the ``{``) is classified with regular expressions. This is deliberately
 heuristic: it finds named functions, methods, closures assigned to names, classes / impl blocks and Rust test
 modules well enough to attribute mutants to functions and run the failure-path rule packs. Exotic syntax
-(nested template literals, generic arrow functions) can confuse it.
+(regex literals containing quotes or braces) can confuse it.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from __future__ import annotations
 import bisect
 import re
 from dataclasses import dataclass, field
+
+from ..lines import line_break
 
 TS = "typescript"
 RUST = "rust"
@@ -32,10 +34,43 @@ def mask(source: str, lang: str) -> str:
             if out[k] != "\n":
                 out[k] = " "
 
+    in_template = False  # inside the text of a TypeScript/JavaScript template literal
+    depths: list[int] = []  # open `{` count of each enclosing `${ ... }` expression
     while i < n:
         c = source[i]
         nxt = source[i + 1] if i + 1 < n else ""
-        if c == "/" and nxt == "/":
+        if in_template:
+            if c == "\\":
+                blank(i, i + 2)
+                i += 2
+            elif c == "`":
+                in_template = False
+                i += 1
+            elif c == "$" and nxt == "{":
+                # The expression is code: mask the `${` and its closing `}` and scan what is between them,
+                # so its own braces, strings and nested templates stay balanced.
+                blank(i, i + 2)
+                depths.append(0)
+                in_template = False
+                i += 2
+            else:
+                blank(i, i + 1)
+                i += 1
+        elif lang == TS and c == "`":
+            in_template = True
+            i += 1
+        elif depths and c == "{":
+            depths[-1] += 1
+            i += 1
+        elif depths and c == "}":
+            if depths[-1] == 0:
+                depths.pop()
+                blank(i, i + 1)
+                in_template = True
+            else:
+                depths[-1] -= 1
+            i += 1
+        elif c == "/" and nxt == "/":
             end = source.find("\n", i)
             end = n if end == -1 else end
             blank(i, end)
@@ -91,8 +126,8 @@ def mask(source: str, lang: str) -> str:
 class LineIndex:
     """Convert between string offsets and 1-based line numbers."""
 
-    def __init__(self, text: str) -> None:
-        self.starts = [0] + [m.end() for m in re.finditer("\n", text)]
+    def __init__(self, text: str, lang: str = RUST) -> None:
+        self.starts = [0] + [m.end() for m in line_break(lang).finditer(text)]
 
     def line(self, offset: int) -> int:
         return bisect.bisect_right(self.starts, offset)
@@ -187,7 +222,7 @@ _TS_DEFAULT_FUNCTION = re.compile(r"\bexport\s+default\s+(?:async\s+)?function\s
 _TS_ANON_FUNCTION = re.compile(r"(?:^|[\s(,=:])([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s+)?function\b[^{]*$", re.S)
 _TS_ARROW = re.compile(
     r"(?:^|[\s,;{(])(?:(?:export\s+)?(?:const|let|var)\s+)?(?:(?:public|private|protected|static|readonly)\s+)*"
-    r"([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*[:=]\s*(?:async\s+)?(?:\(.*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*=>\s*$",
+    r"([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*[:=]\s*(?:async\s+)?(?:<[^()]*>\s*)?(?:\(.*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*=>\s*$",
     re.S,
 )
 _TS_METHOD = re.compile(
@@ -303,7 +338,7 @@ def _classify(lang: str, header: str) -> tuple[str, str, bool]:
 def scan(source: str, lang: str) -> Scan:
     """Find the functions of one TypeScript/JavaScript or Rust source file."""
     masked = mask(source, lang)
-    result = Scan(lang, source, masked, LineIndex(source))
+    result = Scan(lang, source, masked, LineIndex(source, lang))
     sep = "::" if lang == RUST else "."
     # stack of (close_index, kind, name, is_test)
     stack: list[tuple[int, str, str, bool]] = []
@@ -349,7 +384,7 @@ def scan(source: str, lang: str) -> Scan:
 
 
 _TS_EXPR_ARROW = re.compile(
-    r"(?:^|[\s;])(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(async\s+)?"
+    r"(?:^|[\s;])(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(async\s+)?(?:<[^()]*>\s*)?"
     r"(?:\([^()]*(?:\([^()]*\)[^()]*)*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=>\s*(?=[^\s{])"
 )
 

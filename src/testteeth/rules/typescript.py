@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from ..languages.scan import Scan, block_lines, mask, match_paren
+from ..lines import split_lines
 from ..models import FailurePathGap
 from ._common import RETRY_WORDS, GapCollector, failure_tested, first_names
 
@@ -124,7 +125,7 @@ def analyze_typescript(
                 brace = masked.find("{", close)
                 body_open = brace if brace != -1 else close
             first, last, _ = block_lines(masked, scan.index, body_open)
-            body = "\n".join(masked.splitlines()[first - 1 : last])
+            body = "\n".join(split_lines(masked, LANG)[first - 1 : last])
             has_try = bool(re.search(r"\btry\b|\.catch\s*\(", body))
             if (RETRY_WORDS.search(header) or (retry_name and has_try)) and not exercised(qualname):
                 col.add(func, "retry", line,

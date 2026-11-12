@@ -13,6 +13,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .lines import split_lines
 from .models import Mutant
 
 COMPARISON_SWAPS: dict[type[ast.cmpop], type[ast.cmpop]] = {
@@ -74,17 +75,17 @@ def _char_index(lines: list[str], line: int, byte_col: int) -> int:
     return offset + len(lines[line - 1].encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
-def apply_mutant(source: str, mutant: Mutant) -> str:
+def apply_mutant(source: str, mutant: Mutant, lang: str = "python") -> str:
     """Return ``source`` with the mutant's span replaced by its replacement text."""
-    lines = source.splitlines(keepends=True)
+    lines = split_lines(source, lang, keepends=True)
     start = _char_index(lines, mutant.line, mutant.col)
     end = _char_index(lines, mutant.end_line, mutant.end_col)
     return source[:start] + mutant.replacement + source[end:]
 
 
-def matches_source(source: str, mutant: Mutant) -> bool:
+def matches_source(source: str, mutant: Mutant, lang: str = "python") -> bool:
     """True if ``source`` still contains the mutant's original text at its recorded span."""
-    lines = source.splitlines(keepends=True)
+    lines = split_lines(source, lang, keepends=True)
     if not 1 <= mutant.line <= mutant.end_line <= len(lines):
         return False
     start = _char_index(lines, mutant.line, mutant.col)
@@ -137,7 +138,7 @@ class MutantGenerator:
         self.source = source
         self.rel_path = rel_path
         self.operators = operators or frozenset(ALL_OPERATORS)
-        self._lines = source.splitlines(keepends=True)
+        self._lines = split_lines(source, keepends=True)
         self._out: list[Mutant] = []
         self._scope: list[str] = []
         self._func: tuple[str, int] = ("<module>", 0)

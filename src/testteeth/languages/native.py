@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..core import build_function_grades, char_to_byte_col, span_text
+from ..lines import split_lines
 from ..models import GradeReport, Mutant
 from .scan import Scan, scan
 
@@ -114,11 +115,11 @@ def make_mutant(
 ) -> Mutant:
     """Build a shared-model mutant from 1-based (line, column) positions with an exclusive end column."""
     source = cache.source(rel) or ""
-    lines = source.splitlines()
+    lines = split_lines(source, cache.lang)
     line, col = start
     end_line, end_col = end
     char_col, char_end = max(col - 1, 0), max(end_col - 1, 0)
-    original = span_text(source, line, char_col, end_line, char_end) if source else ""
+    original = span_text(source, line, char_col, end_line, char_end, cache.lang) if source else ""
     text_at = lines[line - 1] if 0 < line <= len(lines) else ""
     end_text = lines[end_line - 1] if 0 < end_line <= len(lines) else ""
     scanned = cache.scan(rel)
