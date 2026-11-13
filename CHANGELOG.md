@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-11-13
+
+A correctness release from an audit of 0.2.0. If your project uses pytest-cov or pytest-xdist, earlier versions
+could report a 0% score for a strong suite; upgrade.
+
+### Changed
+- `--base REF` now diffs against the merge base of `REF` and `HEAD` (what a pull request shows) instead of the tip
+  of `REF`. Results differ from 0.2.0 when the base branch has moved on since the branch forked.
+- `--no-cov` is passed to pytest when pytest-cov is installed (not when it is disabled or plugin autoload is off).
+- When the coverage trace records nothing at all, every mutant is run, with a note, instead of being reported
+  `not covered`.
+- Python client names in the external-call check are matched by whole word.
 
 ### Fixed
 - **Scores collapsed to 0% next to pytest-cov or pytest-xdist.** With `--cov` in the pytest options, coverage.py

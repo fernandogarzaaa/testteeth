@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "testteeth"
-version = "0.2.0"
+version = "0.3.0"
 description = "Grade AI-written tests with fast, git-diff-aware mutation testing (Python, TypeScript/JavaScript via StrykerJS, Rust via cargo-mutants), and hand coding agents precise briefs for the tests they are missing (CLI, pytest plugin, MCP server)."
 readme = "README.md"
 license = "MIT"
