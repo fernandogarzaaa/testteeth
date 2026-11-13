@@ -10,7 +10,7 @@
   "devDependencies": {
     "@stryker-mutator/core": "^9.0.0",
     "@stryker-mutator/vitest-runner": "^9.0.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "qs": "^6.16.0"
