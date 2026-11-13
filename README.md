@@ -298,6 +298,13 @@ pytest -m engines      # real StrykerJS / cargo-mutants runs (needs `npm ci` in 
 python -m build && twine check dist/*
 ```
 
+**Releasing.** Merge a PR that bumps `version` in `pyproject.toml` and `src/testteeth/__init__.py` and dates the
+`CHANGELOG.md` section. Then run the **Release** workflow from the Actions tab on `main` with that version. It
+checks that the version, the changelog section and the absence of a tag agree, builds and checks the sdist and
+wheel, publishes them to PyPI, and creates the `vX.Y.Z` tag and GitHub release with the changelog section as notes.
+PyPI accepts either trusted publishing (configure a GitHub publisher for `release.yml`, environment `pypi`) or a
+`PYPI_API_TOKEN` repository secret.
+
 ## License
 
 MIT © Fernando Garza

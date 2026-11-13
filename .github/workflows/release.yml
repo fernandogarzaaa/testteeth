@@ -1,0 +1,117 @@
+name: Release
+
+# Run by hand from the Actions tab ("Run workflow") on main, after the version bump is merged.
+# It checks that the version you type matches the code and the changelog, builds the sdist and wheel,
+# publishes them to PyPI, then creates the vX.Y.Z tag and the GitHub release (notes = that changelog section).
+#
+# PyPI authentication, either one:
+#   * Trusted publishing (recommended, no stored secret): on pypi.org, project testteeth -> Settings ->
+#     Publishing -> add a GitHub publisher: owner fernandogarzaaa, repository testteeth, workflow release.yml,
+#     environment pypi.
+#   * API token: save a PyPI token scoped to testteeth as the repository secret PYPI_API_TOKEN.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v (must match pyproject.toml), e.g. 0.3.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check and build
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Refuse to release from anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this workflow on main (it was started on ${GITHUB_REF})."
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the version, the changelog and the tag
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-z]+[0-9]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a version like 0.3.0"; exit 1
+          fi
+          in_pyproject=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          in_package=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('src/testteeth/__init__.py').read()).group(1))")
+          if [ "$in_pyproject" != "$VERSION" ] || [ "$in_package" != "$VERSION" ]; then
+            echo "::error::pyproject.toml has $in_pyproject and __init__.py has $in_package, not $VERSION"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists"; exit 1
+          fi
+          # Release notes: the changelog section for this version, up to the next "## " heading.
+          awk -v v="$VERSION" '
+            index($0, "## " v " ") == 1 || $0 == "## " v { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no '## $VERSION' section"; exit 1
+          fi
+      - name: Build and check the distributions
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check --strict dist/*
+          ls dist | grep -qx "testteeth-$VERSION.tar.gz"
+          ls dist | grep -qx "testteeth-$VERSION-py3-none-any.whl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI and create the GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/testteeth/${{ inputs.version }}/
+    permissions:
+      contents: write  # create the tag and the release
+      id-token: write  # PyPI trusted publishing
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Empty when the secret is not set: the action then uses trusted publishing.
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # A re-run after a failed release step must not fail on files PyPI already has.
+          skip-existing: true
+      - name: Create the tag and the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ github.sha }}
+        run: |
+          gh release create "v$VERSION" dist/* \
+            --target "$TARGET" \
+            --title "testteeth $VERSION" \
+            --notes-file release-notes.md
