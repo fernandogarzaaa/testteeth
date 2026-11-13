@@ -20,9 +20,9 @@ from testteeth.engine import (
     discover_tests,
     grade,
     is_test_file,
+    resolve_test_paths,
     run_tests,
     select,
-    resolve_test_paths,
 )
 
 CALC = """

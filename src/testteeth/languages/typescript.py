@@ -16,13 +16,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config import DEFAULT_EXCLUDE, ConfigError
-from ..core import line_coverage, read_text, walk_files
+from ..core import line_coverage, position_coverage, read_text, walk_files
 from ..diff import ALL_LINES, changed_lines
 from ..errors import BaselineFailed, EngineCrashed, EngineError, EngineNotInstalled, ReportError
+from ..lines import split_lines, utf16_to_char_col
 from ..models import KILLED, NO_COVERAGE, SURVIVED, TIMEOUT, GradeReport, Mutant
 from ..rules import analyze, test_bodies
 from . import EXTENSIONS
-from .native import SourceCache, finish, make_mutant, new_report, python_only_notes, run_engine, selected_functions, tail
+from .native import (
+    SourceCache,
+    finish,
+    make_mutant,
+    new_report,
+    python_only_notes,
+    run_engine,
+    selected_functions,
+    tail,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Settings
@@ -105,6 +115,14 @@ def _rel(key: str, root: Path) -> str:
     return path.as_posix()
 
 
+def _char_position(lines: list[str], position: tuple[int, int]) -> tuple[int, int]:
+    """A 1-based (line, UTF-16 column) from the report as a 1-based (line, code-point column)."""
+    line, column = position
+    if not 0 < line <= len(lines) or column <= 1:
+        return position
+    return line, utf16_to_char_col(lines[line - 1], column - 1) + 1
+
+
 def _require(obj: Any, key: str, where: str) -> Any:
     if not isinstance(obj, dict) or key not in obj:
         raise ReportError(f"malformed {ENGINE_NAME} report: {where} lacks {key!r}")
@@ -124,6 +142,7 @@ def parse_report(data: Any, root: Path) -> tuple[list[Mutant], int, dict[str, st
     cache = SourceCache(root, LANG, fallback=fallback)
     mutants: list[Mutant] = []
     excluded = 0
+    lines_by_file: dict[str, list[str]] = {}
     for key in sorted(files):
         rel = _rel(key, root)
         entries = _require(files[key], "mutants", f"file {key!r}")
@@ -146,7 +165,10 @@ def parse_report(data: Any, root: Path) -> tuple[list[Mutant], int, dict[str, st
                 continue
             if status_raw not in STATUS:
                 raise ReportError(f"malformed {ENGINE_NAME} report: {where} has unknown status {status_raw!r}")
-            lines = source.splitlines(keepends=True)
+            lines = lines_by_file.setdefault(rel, split_lines(source, LANG, keepends=True))
+            # Stryker (Babel) counts columns in UTF-16 code units; everything downstream uses code points.
+            start_pos = _char_position(lines, start_pos)
+            end_pos = _char_position(lines, end_pos)
             prefix = ""
             if 0 < start_pos[0] <= len(lines):
                 offset = sum(len(t) for t in lines[: start_pos[0] - 1]) + start_pos[1] - 1
@@ -364,11 +386,13 @@ class StrykerAdapter:
             }
         bodies = [body for text in tests.values() for body in test_bodies(text, LANG)]
         coverage = line_coverage(mutants)
+        positions = position_coverage(mutants)
         for rel, (_, lines) in selection.items():
             scanned = cache.scan(rel)
             if scanned is None:
                 continue
-            report.gaps.extend(analyze(scanned, rel, bodies, selected_functions(cache, rel, lines), coverage.get(rel)))
+            report.gaps.extend(analyze(scanned, rel, bodies, selected_functions(cache, rel, lines), coverage.get(rel),
+                                       positions.get(rel)))
         return finish(report, started, progress)
 
     @staticmethod
@@ -392,4 +416,4 @@ class StrykerAdapter:
             raise ReportError(f"{ENGINE_NAME} wrote an invalid JSON report: {exc}") from exc
 
 
-__all__ = ["StrykerAdapter", "parse_report", "normalize_operator", "EngineError"]
+__all__ = ["EngineError", "StrykerAdapter", "normalize_operator", "parse_report"]

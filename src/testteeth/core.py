@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from .errors import EngineError
+from .lines import split_lines
 from .models import NO_COVERAGE, FailurePathGap, FunctionGrade, Mutant
 
 
@@ -43,14 +44,28 @@ def line_coverage(mutants: Iterable[Mutant]) -> dict[str, dict[int, bool]]:
     return result
 
 
+def position_coverage(mutants: Iterable[Mutant]) -> dict[str, dict[int, list[tuple[int, bool]]]]:
+    """Per file, per line: ``(start column, executed?)`` of every mutant starting on that line.
+
+    Finer than :func:`line_coverage`: on ``if (x <= 0) throw new Error("...")`` the condition is covered while
+    the ``throw`` is not, which only the columns can tell apart.
+    """
+    result: dict[str, dict[int, list[tuple[int, bool]]]] = {}
+    for mutant in mutants:
+        result.setdefault(mutant.file, {}).setdefault(mutant.line, []).append(
+            (mutant.col, mutant.status != NO_COVERAGE)
+        )
+    return result
+
+
 def char_to_byte_col(line_text: str, char_col: int) -> int:
     """Convert a 0-based character column to the UTF-8 byte column the span helpers expect."""
     return len(line_text[: max(char_col, 0)].encode("utf-8"))
 
 
-def span_text(source: str, line: int, col: int, end_line: int, end_col: int) -> str:
+def span_text(source: str, line: int, col: int, end_line: int, end_col: int, lang: str = "python") -> str:
     """Text of a span given 1-based lines and 0-based *character* columns."""
-    lines = source.splitlines(keepends=True)
+    lines = split_lines(source, lang, keepends=True)
     if not 1 <= line <= end_line <= len(lines):
         return ""
     start = sum(len(t) for t in lines[: line - 1]) + col

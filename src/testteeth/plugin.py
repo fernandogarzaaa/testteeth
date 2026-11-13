@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("testteeth", "mutation grading of the test suite")
     group.addoption("--testteeth", action="store_true", default=False, help="grade the tests by mutation testing")
@@ -50,6 +51,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     config = session.config
     if not config.getoption("testteeth") or os.environ.get("TESTTEETH_ACTIVE"):
         return
+    if hasattr(config, "workerinput") or config.getoption("collectonly", False):
+        return  # pytest-xdist workers leave grading to the controller; --collect-only ran no tests
     if exitstatus != 0:
         config._testteeth_message = "testteeth: skipped, the test suite did not pass"  # type: ignore[attr-defined]
         return

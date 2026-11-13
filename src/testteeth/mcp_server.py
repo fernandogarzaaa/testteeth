@@ -22,7 +22,7 @@ from .diff import GitError
 from .errors import BaselineFailed, EngineCrashed, EngineError, EngineNotInstalled
 from .languages import grade_project as grade
 from .models import GradeReport
-from .suggest import build_briefs, gap_brief, render_markdown
+from .suggest import build_briefs, gap_brief, read_sources, render_markdown, unreadable_sources
 
 INSTRUCTIONS = (
     "testteeth grades a project's tests with mutation testing (Python built in; TypeScript/JavaScript via StrykerJS; "
@@ -39,7 +39,7 @@ _lock = threading.Lock()
 
 def _key(settings: Settings) -> tuple[Any, ...]:
     return (str(settings.root), settings.base_ref, tuple(settings.paths), tuple(settings.test_args), settings.lang,
-            tuple(settings.engine_args))
+            tuple(settings.engine_args), settings.max_mutants)
 
 
 def _settings(path: str, base_ref: str | None, pytest_args: str | None, paths: list[str] | None,
@@ -155,8 +155,9 @@ def suggest_missing_tests(path: str = ".", base_ref: str | None = None, pytest_a
         settings, report = _run(path, base_ref, pytest_args, paths, max_mutants, refresh, lang, engine_args)
     except (ConfigError, EngineError, GitError) as exc:
         return _error(exc)
-    sources = {f: (settings.root / f).read_text(encoding="utf-8") for f in {m.file for m in report.mutants}}
+    sources = read_sources(settings.root, report)
     briefs = build_briefs(report, sources)
+    skipped = unreadable_sources(report, sources)
     shown = briefs[:limit] if limit else briefs
     return {
         "lang": report.lang,
@@ -164,7 +165,8 @@ def suggest_missing_tests(path: str = ".", base_ref: str | None = None, pytest_a
         "total_briefs": len(briefs),
         "briefs": [b.to_dict() for b in shown],
         "failure_path_gaps": [gap_brief(g) for g in report.gaps],
-        "markdown": render_markdown(briefs, report.gaps, limit or None),
+        "skipped_files": skipped,
+        "markdown": render_markdown(briefs, report.gaps, limit or None, skipped),
     }
 
 
@@ -177,7 +179,7 @@ def build_server() -> Any:
         from mcp.server.mcpserver import MCPServer as Server
     except ImportError:  # MCP Python SDK v1
         try:
-            from mcp.server.fastmcp import FastMCP as Server
+            from mcp.server.fastmcp import FastMCP as Server  # type: ignore[attr-defined,no-redef]
         except ImportError as exc:  # pragma: no cover - depends on the environment
             raise SystemExit("The MCP server needs the MCP SDK: pip install 'testteeth[mcp]'") from exc
     server = Server(name="testteeth", instructions=INSTRUCTIONS)

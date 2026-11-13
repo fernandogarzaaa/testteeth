@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Scores collapsed to 0% next to pytest-cov or pytest-xdist.** With `--cov` in the pytest options, coverage.py
+  replaced testteeth's line tracer; with `-n`, the tests ran in worker processes that were never traced. Either
+  way every mutant was reported `not covered` and a strong suite scored 0%. The tracer now uses `sys.monitoring`
+  on Python 3.12+, xdist workers write their own trace fragments that the engine merges, `--no-cov` is passed to
+  the suite when pytest-cov is installed, and a trace that recorded nothing at all makes testteeth run every
+  mutant (with a note) instead of guessing.
+- **`--base` diffed against the tip of the base ref**, so commits that landed on `main` after the branch forked
+  were graded as if the branch had changed them. The diff is now taken from the merge base (falling back to the
+  ref when there is none).
+- **Rust `--base` graded unchanged neighbours.** Context lines of the diff handed to `cargo mutants --in-diff`
+  counted as changed lines, so functions next to the edit received failure-path gaps.
+- **TypeScript/Rust function ranges.** A `{` or `;` inside a signature ended or hid the function
+  (`function f(opts = {})`, destructured and object-typed parameters, object-literal return types,
+  `fn f(salt: [u8; 4])`), so its mutants were attributed to `<module>`, its failure-path gaps were lost and
+  `--base` did not select it. An apostrophe in JSX text or a quote in a regex literal swallowed the functions
+  that followed. Callbacks (`setTimeout(function () {`) are no longer named after their callee, and
+  `export default function () {` is recognised.
+- **TypeScript failure paths.** A `throw` on the same line as its covered guard (`if (x <= 0) throw ...`) and a
+  `catch` block whose only StrykerJS verdict is "no coverage" on the `catch (e) {` line were not reported.
+- **Rust failure paths.** `Err(..)` in patterns and comparisons (`matches!(r, Err(_))`, `r == Err(..)`,
+  `Some(Err(_)) =>`, `Err(e) if e.code == 2 =>`) was counted as an error return.
+- **Mutant spans shifted by unusual characters.** Lines were split with `str.splitlines()`, which also breaks on
+  form feeds, U+2028 and a few other characters that parsers do not treat as line breaks, so every mutant after
+  one had the wrong text. Lines are now split by each language's own rules (Python, ECMAScript, Rust).
+- **StrykerJS columns are UTF-16 code units.** After an emoji (or any astral character) on the same line the
+  mutant's original text and brief were off by one per character.
+- **Nested template literals** (`` `${xs.map(x => `{${x}`)}` ``) unbalanced the TypeScript scanner's braces;
+  `${...}` expressions are now scanned as code. Generic arrow functions (`async <T,>(a: T) => {`) are detected.
+- **Python external-call check matched substrings**: `capitals.get()` and `feedback.get()` counted as client
+  calls because they contain "api" and "db". Whole words are matched now (`api_client`, `apiClient`, `self.db`).
+- TypeScript briefs for an emptied `catch` block used Python wording (`except`, `pass`).
+- Non-ASCII file names were dropped from `--base` selection (git quotes them by default).
+- Failure injected through a test decorator (`@patch(..., side_effect=TimeoutError)`) was not seen by the Python
+  failure-path check, which reported a false gap.
+- Wrongly typed settings (`workers = "4"`, `fail_under = true`) crashed with a `TypeError`; they are now
+  configuration errors (exit code 2).
+- `testteeth.toml` was ignored when a `pyproject.toml` without `[tool.testteeth]` existed.
+- `pytest --testteeth -n N` no longer attempts to grade inside xdist workers, and `--collect-only` skips grading.
+- `testteeth suggest` and the MCP `suggest_missing_tests` tool no longer crash when a mutated file was deleted
+  or is not UTF-8; the MCP result cache now distinguishes `max_mutants`.
+- `testteeth suggest` and the MCP tool name the files whose surviving mutants got no brief (missing or not
+  UTF-8) instead of reporting a clean result.
+- CI checkouts no longer persist the GitHub token (`persist-credentials: false`).
+
+### Added
+- `# pragma: no mutate` in a comment on a Python line excludes every mutant whose replaced span touches that
+  line (for reviewed equivalent mutants).
+- Python 3.13 and 3.14 are tested in CI; ruff and mypy configurations are part of the project and enforced in CI.
+
 ## 0.2.0 - 2026-10-08
 
 Multi-language support: testteeth now grades **TypeScript/JavaScript** (via StrykerJS) and **Rust** (via

@@ -18,6 +18,7 @@ import ast
 import re
 from collections.abc import Iterable
 
+from .lines import split_lines
 from .models import FailurePathGap
 
 EXTERNAL_ROOTS = frozenset(
@@ -70,10 +71,22 @@ def external_call_name(call: ast.Call) -> str | None:
         dotted = ast.unparse(func)
         if root in EXTERNAL_ROOTS:
             return dotted
-        receiver = ast.unparse(func.value).lower()
-        if func.attr in EXTERNAL_METHODS and any(hint in receiver for hint in CLIENT_HINTS):
+        if func.attr in EXTERNAL_METHODS and _looks_like_client(ast.unparse(func.value)):
             return dotted
     return None
+
+
+def _looks_like_client(receiver: str) -> bool:
+    """True if a word of ``receiver`` names a client (``self.http_client``, ``apiClient``, ``db.session``).
+
+    Whole words only: ``capitals.get()`` and ``feedback.get()`` contain "api" and "db" but are not clients.
+    """
+    words = re.findall(r"[a-z]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", receiver).lower())
+    return any(
+        word == hint or word == hint + "s" or (hint == "conn" and word.startswith("conn"))
+        for word in words
+        for hint in CLIENT_HINTS
+    )
 
 
 def _has_timeout(func: ast.AST) -> bool:
@@ -101,6 +114,10 @@ def _retry_loops(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.stmt]
     return loops
 
 
+#: Unconditional skips: ``@pytest.mark.skip(...)``, ``@unittest.skip(...)``, ``@skip``; not ``skipif`` / ``skipIf``.
+_SKIP_DECORATOR = re.compile(r"(?:^|\.)skip(?:\(|$)")
+
+
 def _test_functions(test_sources: Iterable[str]) -> list[str]:
     bodies: list[str] = []
     for source in test_sources:
@@ -108,10 +125,14 @@ def _test_functions(test_sources: Iterable[str]) -> list[str]:
             tree = ast.parse(source)
         except SyntaxError:
             continue
-        lines = source.splitlines()
+        lines = split_lines(source)
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
-                bodies.append("\n".join(lines[node.lineno - 1 : node.end_lineno]))
+                if any(_SKIP_DECORATOR.search(ast.unparse(d)) for d in node.decorator_list):
+                    continue  # a test that never runs proves nothing, whatever its decorators mention
+                # Decorators count: `@patch(..., side_effect=TimeoutError)` is where many tests inject the failure.
+                start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+                bodies.append("\n".join(lines[start - 1 : node.end_lineno]))
     return bodies
 
 

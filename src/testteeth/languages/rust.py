@@ -18,12 +18,21 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import DEFAULT_EXCLUDE
 from ..core import read_text, walk_files
-from ..diff import diff_with_untracked, parse_unified_diff
+from ..diff import changed_lines, diff_with_untracked
 from ..errors import BaselineFailed, EngineCrashed, EngineNotInstalled, ReportError
 from ..models import KILLED, SURVIVED, TIMEOUT, GradeReport, Mutant
 from ..rules import analyze
 from ..rules.rust import rust_test_bodies
-from .native import SourceCache, finish, make_mutant, new_report, python_only_notes, run_engine, selected_functions, tail
+from .native import (
+    SourceCache,
+    finish,
+    make_mutant,
+    new_report,
+    python_only_notes,
+    run_engine,
+    selected_functions,
+    tail,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import Settings
@@ -195,7 +204,7 @@ def gather_test_bodies(root: Path, engine_args: list[str], exclude: list[str]) -
         if not text:
             continue
         rel = path.relative_to(root)
-        if rel.parts and rel.parts[0] in ("tests", "benches") or path.name.endswith("_test.rs"):
+        if (rel.parts and rel.parts[0] in ("tests", "benches")) or path.name.endswith("_test.rs"):
             bodies.extend(rust_test_bodies(text))
         elif "#[test]" in text or "#[cfg(test)]" in text or "::test]" in text:
             found = rust_test_bodies(text)
@@ -219,7 +228,11 @@ class CargoMutantsAdapter:
         diff_text = ""
         if settings.base_ref:
             diff_text = diff_with_untracked(root, settings.base_ref, ("*.rs",))
-            changed = {rel: frozenset(lines) for rel, lines in parse_unified_diff(diff_text).items()}
+            # The diff handed to cargo-mutants carries context lines; selection needs the exact changed lines.
+            changed = {}
+            for path, changed_in_file in changed_lines(root, settings.base_ref, ("*.rs",)).items():
+                if path.is_relative_to(root):
+                    changed[path.relative_to(root).as_posix()] = changed_in_file
             if not changed:
                 report.notes.append("no changed Rust functions to grade")
                 return finish(report, started, progress)

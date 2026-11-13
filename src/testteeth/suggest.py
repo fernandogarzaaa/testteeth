@@ -10,9 +10,11 @@ from __future__ import annotations
 import re
 import textwrap
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from . import idioms
+from .lines import split_lines
 from .models import NO_COVERAGE, FailurePathGap, GradeReport, Mutant
 from .operators import apply_mutant, matches_source
 
@@ -77,8 +79,8 @@ class TestBrief:
         return asdict(self)
 
 
-def _lines(source: str, start: int, end: int) -> str:
-    return textwrap.dedent("\n".join(source.splitlines()[start - 1 : end])).strip()
+def _lines(source: str, start: int, end: int, lang: str = "python") -> str:
+    return textwrap.dedent("\n".join(split_lines(source, lang)[start - 1 : end])).strip()
 
 
 def _slug(text: str) -> str:
@@ -160,10 +162,13 @@ def _why_and_what(m: Mutant, lang: str = "python", line_text: str = "") -> tuple
         )
     if op == "swallow-exception":
         exc = m.exception or "the exception"
+        if lang == "python":
+            handler, verb = f"The `except {exc}` handler can be replaced by `pass`", "raise"
+        else:
+            handler, verb = "The `catch` block can be emptied", "throw"
         return (
-            f"The `except {exc}` handler can be replaced by `pass` and nothing fails: no test makes the guarded "
-            "code raise and checks what the handler does.",
-            f"make the code inside the `try` raise `{exc}` (e.g. "
+            f"{handler} and nothing fails: no test makes the guarded code {verb} and checks what the handler does.",
+            f"make the code inside the `try` {verb} `{exc}` (e.g. "
             + idioms.FAKE_FAILURE.get(lang, idioms.FAKE_FAILURE["python"]).format(
                 exc=exc.split(",")[0].strip("() ") if lang == "python" else "Error"
             )
@@ -247,11 +252,12 @@ def _function_is_async(source: str, mutant: Mutant, lang: str) -> bool:
 
 def brief_for(mutant: Mutant, source: str, lang: str = "python") -> TestBrief:
     """Build the brief for one surviving mutant, given the original source of its file."""
-    mutated_source = apply_mutant(source, mutant)
-    delta = len(mutated_source.splitlines()) - len(source.splitlines())
-    original_code = _lines(source, mutant.line, mutant.end_line)
-    mutated_code = _lines(mutated_source, mutant.line, mutant.end_line + delta)
-    line_text = source.splitlines()[mutant.line - 1] if 0 < mutant.line <= len(source.splitlines()) else ""
+    mutated_source = apply_mutant(source, mutant, lang)
+    source_lines = split_lines(source, lang)
+    delta = len(split_lines(mutated_source, lang)) - len(source_lines)
+    original_code = _lines(source, mutant.line, mutant.end_line, lang)
+    mutated_code = _lines(mutated_source, mutant.line, mutant.end_line + delta, lang)
+    line_text = source_lines[mutant.line - 1] if 0 < mutant.line <= len(source_lines) else ""
     why, what = _why_and_what(mutant, lang, line_text)
     if mutant.status == NO_COVERAGE:
         where = f" inside `{mutant.context}`" if mutant.context else ""
@@ -299,6 +305,17 @@ def gap_brief(gap: FailurePathGap) -> dict[str, Any]:
     return data
 
 
+def read_sources(root: Path, report: GradeReport) -> dict[str, str]:
+    """Current source of every mutated file; files that vanished or are not UTF-8 are left out."""
+    sources: dict[str, str] = {}
+    for rel in sorted({m.file for m in report.mutants}):
+        try:
+            sources[rel] = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return sources
+
+
 def build_briefs(report: GradeReport, sources: dict[str, str]) -> list[TestBrief]:
     """Briefs for every surviving mutant in ``report``; ``sources`` maps file -> original source.
 
@@ -307,7 +324,7 @@ def build_briefs(report: GradeReport, sources: dict[str, str]) -> list[TestBrief
     briefs = [
         brief_for(m, sources[m.file], report.lang)
         for m in report.surviving()
-        if m.file in sources and matches_source(sources[m.file], m)
+        if m.file in sources and matches_source(sources[m.file], m, report.lang)
     ]
     briefs.sort(key=lambda b: (not b.failure_path, b.file, b.line))
     return briefs
@@ -316,9 +333,27 @@ def build_briefs(report: GradeReport, sources: dict[str, str]) -> list[TestBrief
 _FENCE = {"python": "python", "typescript": "ts", "rust": "rust"}
 
 
-def render_markdown(briefs: list[TestBrief], gaps: list[FailurePathGap], limit: int | None = None) -> str:
-    """Render briefs as Markdown a coding agent can act on directly."""
+def unreadable_sources(report: GradeReport, sources: dict[str, str]) -> list[str]:
+    """Files with surviving mutants whose source could not be read, so no brief could be written for them."""
+    return sorted({m.file for m in report.surviving()} - set(sources))
+
+
+def _skipped_note(skipped: list[str]) -> list[str]:
+    files = ", ".join(f"`{name}`" for name in skipped)
+    return [f"_No briefs for surviving mutants in {files}: the file is missing or not UTF-8._", ""]
+
+
+def render_markdown(
+    briefs: list[TestBrief], gaps: list[FailurePathGap], limit: int | None = None, skipped: list[str] | None = None
+) -> str:
+    """Render briefs as Markdown a coding agent can act on directly.
+
+    ``skipped`` names files whose surviving mutants have no brief (see :func:`unreadable_sources`), so a
+    clean-looking result never hides them.
+    """
     if not briefs and not gaps:
+        if skipped:
+            return "\n".join(["# Missing tests (testteeth)", "", *_skipped_note(skipped)])
         return "No surviving mutants and no failure-path gaps: the tests already pin this code down.\n"
     out = [
         "# Missing tests (testteeth)",
@@ -359,4 +394,6 @@ def render_markdown(briefs: list[TestBrief], gaps: list[FailurePathGap], limit: 
             out.append(f"- `{gap.function}` {gap.file}:{gap.line} [{gap.kind}] {gap.detail}. "
                        f"Test: {gap_brief(gap)['must_assert']}.")
         out.append("")
+    if skipped:
+        out += _skipped_note(skipped)
     return "\n".join(out)

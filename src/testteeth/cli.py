@@ -16,7 +16,7 @@ from .errors import BaselineFailed, EngineCrashed, EngineError
 from .languages import grade_project as grade
 from .models import GradeReport, Mutant
 from .report import render_json, render_text
-from .suggest import build_briefs, gap_brief, render_markdown
+from .suggest import build_briefs, gap_brief, read_sources, render_markdown, unreadable_sources
 
 EXIT_OK = 0
 EXIT_GATE = 1
@@ -106,8 +106,7 @@ def _grade(args: argparse.Namespace) -> tuple[Settings, GradeReport]:
 
 
 def _sources(settings: Settings, report: GradeReport) -> dict[str, str]:
-    files = {m.file for m in report.mutants}
-    return {f: (settings.root / f).read_text(encoding="utf-8") for f in files}
+    return read_sources(settings.root, report)
 
 
 def tail_text(text: str, lines: int = 25) -> str:
@@ -147,16 +146,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.json_out).write_text(render_json(report), encoding="utf-8")
         return EXIT_OK if report.passed_gate else EXIT_GATE
 
-    briefs = build_briefs(report, _sources(settings, report))
+    sources = _sources(settings, report)
+    briefs = build_briefs(report, sources)
+    skipped = unreadable_sources(report, sources)
     if args.format == "json":
         payload = {
             "score": report.score,
             "briefs": [b.to_dict() for b in (briefs[: args.limit] if args.limit else briefs)],
             "failure_path_gaps": [gap_brief(g) for g in report.gaps],
+            "skipped_files": skipped,
         }
         print(json.dumps(payload, indent=2))
     else:
-        print(render_markdown(briefs, report.gaps, args.limit), end="")
+        print(render_markdown(briefs, report.gaps, args.limit, skipped), end="")
     return EXIT_OK
 
 

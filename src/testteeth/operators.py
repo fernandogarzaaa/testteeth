@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import ast
 import copy
+import io
+import re
+import tokenize
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .lines import split_lines
 from .models import Mutant
 
 COMPARISON_SWAPS: dict[type[ast.cmpop], type[ast.cmpop]] = {
@@ -39,6 +43,9 @@ ARITHMETIC_SWAPS: dict[type[ast.operator], type[ast.operator]] = {
 
 #: Call roots whose removal is (almost always) unobservable: logging and printing.
 QUIET_CALL_ROOTS = frozenset({"print", "logging", "logger", "log", "_log", "_logger", "LOGGER", "LOG"})
+
+#: A line carrying this comment is never mutated (for equivalent mutants and deliberate exceptions).
+NO_MUTATE = re.compile(r"#\s*pragma:\s*no[ -]mutate\b", re.IGNORECASE)
 
 ALL_OPERATORS = (
     "comparison",
@@ -70,17 +77,17 @@ def _char_index(lines: list[str], line: int, byte_col: int) -> int:
     return offset + len(lines[line - 1].encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
-def apply_mutant(source: str, mutant: Mutant) -> str:
+def apply_mutant(source: str, mutant: Mutant, lang: str = "python") -> str:
     """Return ``source`` with the mutant's span replaced by its replacement text."""
-    lines = source.splitlines(keepends=True)
+    lines = split_lines(source, lang, keepends=True)
     start = _char_index(lines, mutant.line, mutant.col)
     end = _char_index(lines, mutant.end_line, mutant.end_col)
     return source[:start] + mutant.replacement + source[end:]
 
 
-def matches_source(source: str, mutant: Mutant) -> bool:
+def matches_source(source: str, mutant: Mutant, lang: str = "python") -> bool:
     """True if ``source`` still contains the mutant's original text at its recorded span."""
-    lines = source.splitlines(keepends=True)
+    lines = split_lines(source, lang, keepends=True)
     if not 1 <= mutant.line <= mutant.end_line <= len(lines):
         return False
     start = _char_index(lines, mutant.line, mutant.col)
@@ -126,6 +133,20 @@ def _exception_name(node: ast.AST | None) -> str:
     return _dotted(node)
 
 
+def _no_mutate_lines(source: str) -> set[int]:
+    """Lines carrying a ``# pragma: no mutate`` *comment* (the same text inside a string does not count)."""
+    if not NO_MUTATE.search(source):  # cheap pre-check before tokenizing; same case-insensitive pattern
+        return set()
+    lines: set[int] = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT and NO_MUTATE.search(token.string):
+                lines.add(token.start[0])
+    except (tokenize.TokenError, IndentationError, SyntaxError):  # pragma: no cover - the source already parsed
+        pass
+    return lines
+
+
 class MutantGenerator:
     """Walks a module and yields every mutant it can make."""
 
@@ -133,7 +154,7 @@ class MutantGenerator:
         self.source = source
         self.rel_path = rel_path
         self.operators = operators or frozenset(ALL_OPERATORS)
-        self._lines = source.splitlines(keepends=True)
+        self._lines = split_lines(source, keepends=True)
         self._out: list[Mutant] = []
         self._scope: list[str] = []
         self._func: tuple[str, int] = ("<module>", 0)
@@ -144,7 +165,10 @@ class MutantGenerator:
         tree = ast.parse(self.source)
         self._body(tree.body)
         valid: list[Mutant] = []
+        skipped = _no_mutate_lines(self.source)
         for mutant in self._out:
+            if any(mutant.line <= line <= mutant.end_line for line in skipped):
+                continue  # the replaced span touches a protected line
             try:
                 compile(apply_mutant(self.source, mutant), self.rel_path, "exec")
             except (SyntaxError, ValueError):
@@ -160,7 +184,9 @@ class MutantGenerator:
         end = _char_index(self._lines, span.end_line, span.end_col)
         return self.source[start:end]
 
-    def _add(self, operator: str, span: _Span, replacement: str, description: str, **extra: str) -> None:
+    def _add(
+        self, operator: str, span: _Span, replacement: str, description: str, *, exception: str = "", call: str = ""
+    ) -> None:
         if operator not in self.operators:
             return
         original = self._segment(span)
@@ -181,7 +207,8 @@ class MutantGenerator:
                 original=original,
                 replacement=replacement,
                 context=self._context[-1] if self._context else "",
-                **extra,
+                exception=exception,
+                call=call,
             )
         )
 
@@ -345,19 +372,19 @@ class MutantGenerator:
                     "comparison", node, new, f"comparison `{type(op).__name__}` flipped to `{swap.__name__}`"
                 )
         elif isinstance(node, ast.BoolOp):
-            new = copy.deepcopy(node)
-            new.op = ast.Or() if isinstance(node.op, ast.And) else ast.And()
+            flipped = copy.deepcopy(node)
+            flipped.op = ast.Or() if isinstance(node.op, ast.And) else ast.And()
             label = ("and", "or") if isinstance(node.op, ast.And) else ("or", "and")
-            self._replace_expr("boolean", node, new, f"`{label[0]}` replaced with `{label[1]}`")
+            self._replace_expr("boolean", node, flipped, f"`{label[0]}` replaced with `{label[1]}`")
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             self._add("boolean", _span(node), f"({ast.unparse(node.operand)})", "`not` removed (condition inverted)")
         elif isinstance(node, ast.BinOp):
-            swap = ARITHMETIC_SWAPS.get(type(node.op))
-            if swap is not None:
-                new = copy.deepcopy(node)
-                new.op = swap()
+            arith = ARITHMETIC_SWAPS.get(type(node.op))
+            if arith is not None:
+                swapped = copy.deepcopy(node)
+                swapped.op = arith()
                 self._replace_expr(
-                    "arithmetic", node, new, f"arithmetic `{type(node.op).__name__}` swapped for `{swap.__name__}`"
+                    "arithmetic", node, swapped, f"arithmetic `{type(node.op).__name__}` swapped for `{arith.__name__}`"
                 )
         elif isinstance(node, ast.Constant):
             self._constant(node)

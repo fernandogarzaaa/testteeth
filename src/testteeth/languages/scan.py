@@ -5,7 +5,7 @@ offsets and line numbers stay valid), then braces are matched and each block's *
 previous ``;``/``{``/``}`` and the ``{``) is classified with regular expressions. This is deliberately
 heuristic: it finds named functions, methods, closures assigned to names, classes / impl blocks and Rust test
 modules well enough to attribute mutants to functions and run the failure-path rule packs. Exotic syntax
-(regex literals containing quotes, object types in arrow-function parameters) can confuse it.
+(regex literals containing quotes or braces) can confuse it.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from __future__ import annotations
 import bisect
 import re
 from dataclasses import dataclass, field
+
+from ..lines import line_break
 
 TS = "typescript"
 RUST = "rust"
@@ -26,18 +28,52 @@ def mask(source: str, lang: str) -> str:
     out = list(source)
     n = len(source)
     i = 0
+    keep = "\n\r\u2028\u2029" if lang == TS else "\n"  # line breaks survive masking so line numbers hold
 
     def blank(start: int, end: int) -> None:
         for k in range(max(start, 0), min(end, n)):
-            if out[k] != "\n":
+            if out[k] not in keep:
                 out[k] = " "
 
+    in_template = False  # inside the text of a TypeScript/JavaScript template literal
+    depths: list[int] = []  # open `{` count of each enclosing `${ ... }` expression
     while i < n:
         c = source[i]
         nxt = source[i + 1] if i + 1 < n else ""
-        if c == "/" and nxt == "/":
-            end = source.find("\n", i)
-            end = n if end == -1 else end
+        if in_template:
+            if c == "\\":
+                blank(i, i + 2)
+                i += 2
+            elif c == "`":
+                in_template = False
+                i += 1
+            elif c == "$" and nxt == "{":
+                # The expression is code: mask the `${` and its closing `}` and scan what is between them,
+                # so its own braces, strings and nested templates stay balanced.
+                blank(i, i + 2)
+                depths.append(0)
+                in_template = False
+                i += 2
+            else:
+                blank(i, i + 1)
+                i += 1
+        elif lang == TS and c == "`":
+            in_template = True
+            i += 1
+        elif depths and c == "{":
+            depths[-1] += 1
+            i += 1
+        elif depths and c == "}":
+            if depths[-1] == 0:
+                depths.pop()
+                blank(i, i + 1)
+                in_template = True
+            else:
+                depths[-1] -= 1
+            i += 1
+        elif c == "/" and nxt == "/":
+            ending = line_break(lang).search(source, i)  # U+2028/U+2029 also end a JavaScript comment
+            end = n if ending is None else ending.start()
             blank(i, end)
             i = end
         elif c == "/" and nxt == "*":
@@ -64,7 +100,10 @@ def mask(source: str, lang: str) -> str:
             i = end + len(closing)
         elif c in "\"`" or (c == "'" and lang == TS):
             j = i + 1
-            while j < n and source[j] != c:
+            # Only template literals span lines in TypeScript/JavaScript: ending '...' and "..." at the line
+            # break keeps an apostrophe in JSX text or a quote in a regex literal from swallowing the file.
+            one_line = lang == TS and c != "`"
+            while j < n and source[j] != c and not (one_line and source[j] == "\n"):
                 j += 2 if source[j] == "\\" else 1
             blank(i + 1, j)
             i = j + 1
@@ -88,8 +127,8 @@ def mask(source: str, lang: str) -> str:
 class LineIndex:
     """Convert between string offsets and 1-based line numbers."""
 
-    def __init__(self, text: str) -> None:
-        self.starts = [0] + [m.end() for m in re.finditer("\n", text)]
+    def __init__(self, text: str, lang: str = RUST) -> None:
+        self.starts = [0] + [m.end() for m in line_break(lang).finditer(text)]
 
     def line(self, offset: int) -> int:
         return bisect.bisect_right(self.starts, offset)
@@ -180,10 +219,11 @@ _TS_KEYWORDS = frozenset(
     "export default case throw delete void in of instanceof".split()
 )
 _TS_FUNCTION = re.compile(r"\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*(?:<[^()]*>)?\s*\(", re.S)
+_TS_DEFAULT_FUNCTION = re.compile(r"\bexport\s+default\s+(?:async\s+)?function\s*\*?\s*\(")
 _TS_ANON_FUNCTION = re.compile(r"(?:^|[\s(,=:])([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s+)?function\b[^{]*$", re.S)
 _TS_ARROW = re.compile(
     r"(?:^|[\s,;{(])(?:(?:export\s+)?(?:const|let|var)\s+)?(?:(?:public|private|protected|static|readonly)\s+)*"
-    r"([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*[:=]\s*(?:async\s+)?(?:\(.*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*=>\s*$",
+    r"([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*[:=]\s*(?:async\s+)?(?:<[^()]*>\s*)?(?:\(.*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?\s*=>\s*$",
     re.S,
 )
 _TS_METHOD = re.compile(
@@ -201,12 +241,51 @@ _RS_MOD = re.compile(r"\bmod\s+([A-Za-z_]\w*)\s*$")
 _RS_TEST_ATTR = re.compile(r"#\[(?:\w+::)*(?:test|rstest|tokio::test|async_std::test|test_case)\b")
 
 
-def _header(masked: str, brace: int) -> tuple[str, int]:
-    k = brace - 1
-    while k >= 0 and masked[k] not in ";{}":
+_TS_RETURN_TYPE = re.compile(r"\)\s*:\s*$")
+
+
+def _open_brace(masked: str, close: int) -> int:
+    """Index of the ``{`` matching the ``}`` at ``close`` (or -1 if unbalanced)."""
+    depth = 0
+    for k in range(close, -1, -1):
+        ch = masked[k]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            depth -= 1
+            if depth == 0:
+                return k
+    return -1
+
+
+def _header(masked: str, brace: int, lang: str = "") -> tuple[str, int]:
+    """Text between the previous statement boundary and the ``{`` at ``brace``, and where it starts.
+
+    The walk back is bracket-aware: ``;``, ``{`` and ``}`` inside a parenthesised or bracketed group belong to
+    the header (``function f(opts = {})``, ``for (a; b; c)``, ``fn f(x: [u8; 4])``). A ``{`` that sits inside
+    a still-open ``(`` or ``[`` (a destructured parameter, an object argument, a callback) gets the text after
+    that opener as its header. A TypeScript object-literal return type (``f(): { a: number } {``) is skipped.
+    """
+    k, depth = brace - 1, 0
+    while k >= 0:
+        ch = masked[k]
+        if ch in ")]":
+            depth += 1
+        elif ch in "([":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and ch in ";{":
+            break
+        elif depth == 0 and ch == "}":
+            opener = _open_brace(masked, k) if lang == TS else -1
+            if opener > 0 and _TS_RETURN_TYPE.search(masked[max(opener - 200, 0) : opener]):
+                k = opener - 1
+                continue
+            break
         k -= 1
     start = k + 1
-    # Rust attributes like #[cfg(test)] never contain ; { } so they stay part of the header.
+    # Rust attributes like #[cfg(test)] are bracketed, so they stay part of the header.
     return masked[start:brace], start
 
 
@@ -232,6 +311,8 @@ def _classify(lang: str, header: str) -> tuple[str, str, bool]:
         if trait:
             return "scope", trait.group(1), False
         return "block", "", False
+    if text.endswith(":"):
+        return "block", "", False  # an object-literal type or value (`f(): { a: number }`, `key: {`)
     cls = _TS_CLASS.search(text)
     if cls and not text.rstrip().endswith(")"):
         return "scope", cls.group(1), False
@@ -239,6 +320,8 @@ def _classify(lang: str, header: str) -> tuple[str, str, bool]:
     is_async = bool(re.search(r"\basync\b", text))
     if fn:
         return "function", fn.group(1), is_async
+    if _TS_DEFAULT_FUNCTION.search(text):
+        return "function", "default", is_async
     if text.endswith("=>"):
         arrow = _TS_ARROW.search(" " + text)
         if arrow:
@@ -256,7 +339,7 @@ def _classify(lang: str, header: str) -> tuple[str, str, bool]:
 def scan(source: str, lang: str) -> Scan:
     """Find the functions of one TypeScript/JavaScript or Rust source file."""
     masked = mask(source, lang)
-    result = Scan(lang, source, masked, LineIndex(source))
+    result = Scan(lang, source, masked, LineIndex(source, lang))
     sep = "::" if lang == RUST else "."
     # stack of (close_index, kind, name, is_test)
     stack: list[tuple[int, str, str, bool]] = []
@@ -265,7 +348,7 @@ def scan(source: str, lang: str) -> Scan:
             continue
         while stack and stack[-1][0] < k:
             stack.pop()
-        header, hstart = _header(masked, k)
+        header, hstart = _header(masked, k, lang)
         kind, name, is_async = _classify(lang, header)
         close = match_brace(masked, k)
         in_test = any(entry[3] for entry in stack)
@@ -302,7 +385,7 @@ def scan(source: str, lang: str) -> Scan:
 
 
 _TS_EXPR_ARROW = re.compile(
-    r"(?:^|[\s;])(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(async\s+)?"
+    r"(?:^|[\s;])(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*(async\s+)?(?:<[^()]*>\s*)?"
     r"(?:\([^()]*(?:\([^()]*\)[^()]*)*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=>\s*(?=[^\s{])"
 )
 

@@ -14,9 +14,8 @@ import pytest
 from testteeth import cli, mcp_server
 from testteeth.config import ConfigError, load_settings
 from testteeth.languages import detect_language, get_adapter, grade_project, normalize_lang
-from testteeth.models import GradeReport, Mutant
+from testteeth.models import FailurePathGap, GradeReport, Mutant
 from testteeth.suggest import brief_for, gap_brief
-from testteeth.models import FailurePathGap
 
 ROOT = Path(__file__).parents[1]
 #: CI's engines job sets this so a missing engine fails instead of silently skipping.

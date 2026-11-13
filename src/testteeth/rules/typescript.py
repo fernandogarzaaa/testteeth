@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from ..languages.scan import Scan, block_lines, mask, match_paren
+from ..lines import split_lines
 from ..models import FailurePathGap
 from ._common import RETRY_WORDS, GapCollector, failure_tested, first_names
 
@@ -53,19 +54,34 @@ def analyze_typescript(
     test_bodies: list[str],
     selected: set[str] | None = None,
     coverage: dict[int, bool] | None = None,
+    positions: dict[int, list[tuple[int, bool]]] | None = None,
 ) -> list[FailurePathGap]:
     masked = scan.masked
     col = GapCollector(scan, rel_path, selected, LANG)
     coverage = coverage or {}
+    positions = positions or {}
+
+    def throw_ran(line: int, offset: int) -> bool:
+        """Did any mutant inside the ``throw`` statement at ``offset`` run? (True when there is none to tell.)"""
+        start = scan.index.offset(line)
+        stop = re.compile(r"[;\n\r\u2028\u2029]").search(masked, offset)
+        end = len(masked) if stop is None else stop.start()
+        first = len(scan.source[start:offset].encode("utf-8"))
+        last = len(scan.source[start:end].encode("utf-8"))
+        inside = [ran for at, ran in positions.get(line, []) if first <= at < last]
+        return any(inside) or not inside
 
     handler_ran: dict[str, bool] = {}
     catch_lines: set[int] = set()
     catches = col.per_function(CATCH, masked)
     for qualname, hits in catches.items():
         for func, line, match in hits:
-            _, _, inner = block_lines(masked, scan.index, match.end() - 1)
+            first, _, inner = block_lines(masked, scan.index, match.end() - 1)
             catch_lines |= inner
             known = [coverage[n] for n in inner if n in coverage]
+            if not known and coverage.get(first) is False:
+                # Only the block's own mutant (on the `catch (e) {` line) is known, and it never ran.
+                known = [False]
             if any(known):
                 handler_ran[qualname] = True
             elif known:
@@ -82,14 +98,15 @@ def analyze_typescript(
 
     for qualname, hits in catches.items():
         for func, line, match in hits:
-            _, _, inner = block_lines(masked, scan.index, match.end() - 1)
-            if not any(n in coverage for n in inner) and not exercised(qualname):
+            first, _, inner = block_lines(masked, scan.index, match.end() - 1)
+            unknown = not any(n in coverage for n in inner) and coverage.get(first) is not False
+            if unknown and not exercised(qualname):
                 col.add(func, "catch-branch", min(inner),
                         "`catch` block: no test makes the `try` body throw, so the handler is unverified", once=False)
 
     for qualname, hits in col.per_function(THROW, masked).items():
         for func, line, match in hits:
-            if line in catch_lines or coverage.get(line, True):
+            if line in catch_lines or (coverage.get(line, True) and throw_ran(line, match.start())):
                 continue
             what = match.group(1) or "error"
             col.add(func, "throw", line, f"`throw {what}` is never triggered by any test", once=False)
@@ -111,7 +128,7 @@ def analyze_typescript(
                 brace = masked.find("{", close)
                 body_open = brace if brace != -1 else close
             first, last, _ = block_lines(masked, scan.index, body_open)
-            body = "\n".join(masked.splitlines()[first - 1 : last])
+            body = "\n".join(split_lines(masked, LANG)[first - 1 : last])
             has_try = bool(re.search(r"\btry\b|\.catch\s*\(", body))
             if (RETRY_WORDS.search(header) or (retry_name and has_try)) and not exercised(qualname):
                 col.add(func, "retry", line,
